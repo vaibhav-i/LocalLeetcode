@@ -42,6 +42,8 @@ def test_solve_smoke() -> None:
     result = runner.invoke(app, ["solve", "two-sum"])
     assert result.exit_code == 0
     assert "two-sum" in result.stdout
+    assert "Requested tests mode: both" in result.stdout
+    assert "Effective tests mode: bundled" in result.stdout
     assert "Bundled tests: 0/2" in result.stdout
 
 
@@ -59,6 +61,13 @@ def test_solve_uses_cache_for_unchanged_solution() -> None:
     assert second.exit_code == 0
     assert "Saved a new attempt snapshot." in first.stdout
     assert "Using cached results." in second.stdout
+
+
+def test_review_without_attempt_reports_missing_saved_attempt() -> None:
+    result = runner.invoke(app, ["review", "two-sum"])
+
+    assert result.exit_code == 1
+    assert "No saved attempt found." in result.stdout or "No saved attempt found" in result.stdout
 
 
 def test_solve_reports_missing_expected_function(tmp_path: Path) -> None:

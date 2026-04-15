@@ -8,9 +8,11 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .config import discover_paths
-from .execution import ExecutionError, execute_solution
+from .execution import ExecutionError
+from .llm import OllamaBackend
 from .preflight import PreflightError
-from .solver import build_pending_attempt
+from .reviews import DEFAULT_STAGE3_EXTENSIONS, review_problem
+from .solve_flow import SolveFlowError, solve_problem
 
 app = typer.Typer(help="Local-first CLI auto-grader for LeetCode-style problems.")
 console = Console()
@@ -21,6 +23,13 @@ def _lazy_imports():
     from .problems import index_problem_bank, load_problem_by_slug
 
     return bootstrap_database, index_problem_bank, load_problem_by_slug
+
+
+def _build_backend(name: str):
+    normalized = name.strip().lower()
+    if normalized == "ollama":
+        return OllamaBackend()
+    raise typer.BadParameter(f"Unsupported backend: {name}")
 
 
 @app.command()
@@ -75,10 +84,10 @@ def solve(
     slug: str = typer.Argument(..., help="Problem slug to evaluate."),
     tests: str = typer.Option("both", "--tests", help="bundled, llm, or both"),
     solution: Path | None = typer.Option(None, "--solution", help="Path to the solution file to evaluate."),
+    force: bool = typer.Option(False, "--force", help="Bypass cached attempts and re-run Stage 1."),
 ) -> None:
     paths = discover_paths()
     bootstrap_database, index_problem_bank, load_problem = _lazy_imports()
-    from .db import CacheKey, find_cached_attempt, insert_attempt
 
     paths.data_dir.mkdir(parents=True, exist_ok=True)
     connection = bootstrap_database(paths.db_path)
@@ -89,64 +98,42 @@ def solve(
             raise typer.BadParameter(f"Unknown problem slug: {slug}")
 
         try:
-            execution = execute_solution(problem, solution)
-        except (ExecutionError, PreflightError) as exc:
+            flow = solve_problem(
+                connection,
+                problem,
+                solution_path=solution,
+                requested_test_mode=tests,
+                force=force,
+            )
+        except (ExecutionError, PreflightError, SolveFlowError) as exc:
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(code=1) from exc
-
-        cache_key = CacheKey(
-            code_hash=execution.code_hash,
-            test_mode=tests,
-            tests_hash=execution.tests_hash,
-        )
-        cached_attempt = find_cached_attempt(connection, slug, cache_key)
-        if cached_attempt is None:
-            insert_attempt(
-                connection,
-                slug=slug,
-                test_mode=tests,
-                code_hash=execution.code_hash,
-                tests_hash=execution.tests_hash,
-                bundled_passed=execution.bundled_passed,
-                bundled_total=execution.bundled_total,
-                llm_passed=0,
-                llm_total=0,
-                runtime_ms=execution.runtime_ms,
-                status=execution.status,
-                code_snapshot=execution.code_snapshot,
-            )
     finally:
         connection.close()
 
-    result = build_pending_attempt(problem, tests)
-    if cached_attempt is not None:
-        result.used_cache = True
-        result.attempt.bundled_passed = int(cached_attempt["bundled_passed"])
-        result.attempt.bundled_total = int(cached_attempt["bundled_total"])
-        result.attempt.runtime_ms = float(cached_attempt["runtime_ms"])
-        result.attempt.status = str(cached_attempt["status"])
-    else:
-        result.attempt.bundled_passed = execution.bundled_passed
-        result.attempt.bundled_total = execution.bundled_total
-        result.attempt.runtime_ms = execution.runtime_ms
-        result.attempt.status = execution.status
+    llm_tests_message = None
+    if flow.requested_test_mode in {"llm", "both"} and flow.effective_test_mode == "bundled":
+        llm_tests_message = "LLM-generated tests are not wired yet; using bundled tests only."
+
     console.print(
         Panel.fit(
             "\n".join(
                 [
-                    f"Problem: {result.problem.metadata.title} ({result.problem.slug})",
-                    f"Function: {result.problem.metadata.function_name}",
-                    f"Tests mode: {result.attempt.test_mode}",
+                    f"Problem: {flow.problem.metadata.title} ({flow.problem.slug})",
+                    f"Function: {flow.problem.metadata.function_name}",
+                    f"Requested tests mode: {flow.requested_test_mode}",
+                    f"Effective tests mode: {flow.effective_test_mode}",
                     (
                         f"Code unchanged since last attempt. "
                         f"Showing cached results."
-                        if result.used_cache
+                        if flow.used_cache
                         else "New code or test inputs detected."
                     ),
-                    f"Bundled tests: {result.attempt.bundled_passed}/{result.attempt.bundled_total}",
-                    f"Status: {result.attempt.status}",
-                    f"Runtime: {result.attempt.runtime_ms:.2f} ms",
-                    "Using cached results." if result.used_cache else "Saved a new attempt snapshot.",
+                    *([llm_tests_message] if llm_tests_message else []),
+                    f"Bundled tests: {flow.attempt.bundled_passed}/{flow.attempt.bundled_total}",
+                    f"Status: {flow.attempt.status}",
+                    f"Runtime: {flow.attempt.runtime_ms:.2f} ms",
+                    "Using cached results." if flow.used_cache else "Saved a new attempt snapshot.",
                 ]
             ),
             title="lcgrade solve",
@@ -157,22 +144,65 @@ def solve(
 @app.command()
 def review(
     slug: str = typer.Argument(..., help="Problem slug to review."),
+    backend: str = typer.Option("ollama", "--backend", help="LLM backend to use for Stage 2/3."),
+    extend: str = typer.Option(
+        ",".join(DEFAULT_STAGE3_EXTENSIONS),
+        "--extend",
+        help="Comma-separated Stage 3 extensions to run.",
+    ),
 ) -> None:
     paths = discover_paths()
-    bootstrap_database, index_problem_bank, load_problem = _lazy_imports()
+    bootstrap_database, index_problem_bank, _ = _lazy_imports()
     paths.data_dir.mkdir(parents=True, exist_ok=True)
     connection = bootstrap_database(paths.db_path)
     try:
         index_problem_bank(connection, paths.problems_dir)
-        problem = load_problem(connection, slug)
+        extension_names = tuple(
+            item.strip()
+            for item in extend.split(",")
+            if item.strip()
+        )
+        result = review_problem(
+            connection,
+            slug,
+            llm=_build_backend(backend),
+            extension_names=extension_names,
+        )
     finally:
         connection.close()
-    if problem is None:
-        raise typer.BadParameter(f"Unknown problem slug: {slug}")
+
+    if result.attempt_id is None:
+        console.print(
+            Panel.fit(
+                result.skipped_reason or f"No attempt found for {slug}.",
+                title="lcgrade review",
+            )
+        )
+        raise typer.Exit(code=1)
+
+    if result.review_text is None:
+        console.print(
+            Panel.fit(
+                result.skipped_reason or "Review was skipped.",
+                title="lcgrade review",
+            )
+        )
+        return
 
     console.print(
         Panel.fit(
-            f"Review pipeline placeholder ready for {problem.metadata.title}.",
+            "\n".join(
+                [
+                    result.review_text,
+                    "",
+                    *(
+                        [
+                            f"## {extension.title}\n{extension.content}"
+                            for extension in result.extension_results
+                        ]
+                    ),
+                ]
+            ).strip(),
             title="lcgrade review",
         )
     )
