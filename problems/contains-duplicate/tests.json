@@ -1,0 +1,14 @@
+[
+  {
+    "input": {"nums": [1, 2, 3, 1]},
+    "expected": true,
+    "validator": "exact_match",
+    "source": "verified"
+  },
+  {
+    "input": {"nums": [1, 2, 3, 4]},
+    "expected": false,
+    "validator": "exact_match",
+    "source": "verified"
+  }
+]

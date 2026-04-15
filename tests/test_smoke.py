@@ -35,7 +35,10 @@ def isolated_app_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 def test_list_problems_smoke() -> None:
     result = runner.invoke(app, ["list-problems"])
     assert result.exit_code == 0
+    assert "Contains" in result.stdout
+    assert "Duplicate" in result.stdout
     assert "two-sum" in result.stdout
+    assert "two-sum-sorted" in result.stdout
 
 
 def test_solve_smoke() -> None:
