@@ -237,15 +237,16 @@ Before doing any work, compute three hashes: SHA-256 of the user's solution file
 
 Fast, deterministic checks that run before any test execution:
 
-- **`ruff`** for code quality and style checking
-- **Function signature validation** — does the user's function match the expected name, params, and return type from the problem metadata? If not, fail fast with a clear error before wasting time on tests.
+- **Syntax validation** — parse the source with Python's `ast.parse()`. If parsing fails, stop immediately and show the syntax error with line/column context.
+- **Function signature validation** — check that the expected function exists and has the correct arity. Parameter names and type hints are advisory only in beta, since valid interview-style Python often omits hints or uses equivalent forms.
+- **Optional lint notes (`ruff`)** — non-blocking style/code-quality feedback. If available, include it in the review output or a separate "Lint Notes" section, but do not fail execution because of stylistic issues.
 
 #### Stage 1: Test Case Execution
 
 Two sources of test cases, selectable via `--tests` flag:
 
 - **`--tests bundled`** (no LLM required): Pre-shipped test cases with known input/output pairs. Works immediately after `pip install lcgrade` with zero setup. Source: converted from cojudge's Blind 75 problem bank.
-- **`--tests llm`**: LLM generates additional edge-case test cases as structured JSON (input, expected output, rationale). Targets cases the bundled tests might miss — empty inputs, duplicates, negative numbers, boundary values.
+- **`--tests llm`**: LLM generates additional edge-case test cases as structured JSON (input, expected output, rationale). Targets cases the provided tests might miss — empty inputs, duplicates, negative numbers, boundary values.
 - **`--tests both`** (default): Runs both bundled and LLM-generated test cases.
 
 User code is executed against test cases via the sandbox (see Code Execution Sandbox section). Results are collected as pass/fail per test case with captured output or error messages.
@@ -260,7 +261,7 @@ User code is executed against test cases via the sandbox (see Code Execution San
 
 #### Stage 2: LLM Review
 
-The LLM receives the code, test results, and ruff output. It produces:
+The LLM receives the code, test results, and optional lint output. It produces:
 
 - **Time and space complexity analysis** inferred from code structure (LLM reads the code and identifies patterns — nested loops, hash map usage, recursion with memoization, etc.). No empirical timing needed; the LLM is good at this from code alone.
 - **Correctness assessment** informed by actual test results
@@ -301,7 +302,7 @@ This also enables the `lcgrade review <slug>` command — re-run Stages 2/3 agai
 If the LLM backend is not available (`backend.available()` returns False):
 
 - **`--tests bundled`**: Works fully. No LLM needed.
-- **`--tests llm` or `--tests both`**: Falls back to bundled-only with a warning: "Ollama not running — using bundled tests only. Run `lcgrade setup` to configure."
+- **`--tests llm` or `--tests both`**: Falls back to provided-tests-only with a warning: "Ollama not running — using provided tests only. Run `lcgrade setup` to configure."
 - **Stage 2/3**: Skipped with a message: "LLM review skipped — Ollama not available. Run `lcgrade review two-sum` when ready."
 - **`lcgrade chat` / `lcgrade hint`**: Clear error: "Chat requires a running LLM backend. Run `ollama serve` to start."
 
@@ -449,7 +450,7 @@ def migrate(db):
             set_db_version(db, version)
 ```
 
-#### `problems` table (rebuilt from files)
+#### `problems` table (indexed from files + durable user progress)
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -462,6 +463,16 @@ def migrate(db):
 | validator | TEXT | Default validator type |
 | schema_version | INTEGER | YAML schema version from frontmatter (for detecting old-format problems) |
 | file_path | TEXT | Path to problem directory |
+| auto_solved | INTEGER | 0/1 flag: has the user ever passed the provided tests? |
+| auto_solved_at | DATETIME NULL | When the problem was first auto-marked solved from provided tests |
+| manual_solved | INTEGER | 0/1 user override flag |
+| manual_solved_at | DATETIME NULL | When the user manually marked the problem solved |
+| review_generated | INTEGER | 0/1 flag: has Stage 2 ever completed successfully? |
+| review_generated_at | DATETIME NULL | When the first review was generated |
+| review_acknowledged | INTEGER | 0/1 flag: has the user acknowledged the review? |
+| review_acknowledged_at | DATETIME NULL | When the user marked the review as completed/absorbed |
+| followup_completed | INTEGER | 0/1 flag: has the user marked follow-up work complete? |
+| followup_completed_at | DATETIME NULL | When the user marked follow-up complete |
 
 #### `attempts` table (execution facts only)
 
@@ -472,9 +483,9 @@ def migrate(db):
 | timestamp | DATETIME | When the attempt was made |
 | test_mode | TEXT | bundled / llm / both |
 | code_hash | TEXT | SHA-256 of the solution file (cache key component) |
-| tests_hash | TEXT | SHA-256 of the bundled tests.json (cache key component) |
-| bundled_passed | INTEGER | Number of bundled tests passed |
-| bundled_total | INTEGER | Total bundled tests |
+| tests_hash | TEXT | SHA-256 of the provided-tests `tests.json` file (cache key component) |
+| bundled_passed | INTEGER | Number of provided tests passed |
+| bundled_total | INTEGER | Total provided tests |
 | llm_passed | INTEGER | Number of LLM tests passed |
 | llm_total | INTEGER | Total LLM tests |
 | runtime_ms | REAL | Execution time |
@@ -498,6 +509,41 @@ def migrate(db):
 
 **Design principle: normalization.** This table stores only execution facts — what happened when the code ran. No LLM-produced analysis. An attempt can exist without a review (user only ran tests). This avoids NULL columns for users who skip Stages 2/3, and cleanly separates "I ran my code" from "I got it reviewed."
 
+#### Problem completion model
+
+The product tracks **three separate progress checks**, not one blended score:
+
+1. **Solved** — durable correctness progress for the problem
+2. **Review** — both the system event ("a review exists") and the user event ("I have acknowledged it")
+3. **Follow-up** — a user progress marker for whether they feel they have taken the solution to a standard they are happy with
+
+These checks are stored on the `problems` table as **sticky milestones**, not derived from only the latest attempt.
+
+**Solved check**
+
+- `auto_solved` becomes true the first time the user passes the **provided tests**
+- `manual_solved` becomes true when the user explicitly marks the problem solved
+- Effective solved state is: `auto_solved OR manual_solved`
+
+**Review check**
+
+- `review_generated` becomes true the first time Stage 2 completes successfully
+- `review_acknowledged` becomes true when the user indicates they have absorbed the review feedback
+- The UI may show both states separately, or use acknowledgment as the top-level "review complete" check while still preserving generated state
+
+**Follow-up check**
+
+- `followup_completed` is a user-controlled progress marker only
+- Running Stage 3 extensions does **not** automatically mark follow-up complete
+- `extension_results` rows are evidence/history of follow-up activity, not the canonical follow-up completion state
+
+Implications for UX:
+
+- `lcgrade solve` should show these as separate checkmarks/statuses
+- history and stats should distinguish solved, review generated, review acknowledged, and follow-up completed
+- if a future numeric score is added, it should represent analysis depth or practice completeness, not correctness
+- once any of these fields becomes true, it stays true until explicitly cleared by the user
+
 #### `reviews` table (LLM analysis, linked to attempt)
 
 | Column | Type | Description |
@@ -507,10 +553,9 @@ def migrate(db):
 | timestamp | DATETIME | When the review was generated |
 | complexity_time | TEXT | e.g., "O(n)" |
 | complexity_space | TEXT | e.g., "O(n)" |
-| qualitative_score | INTEGER | 0-100 from LLM review |
 | review_text | TEXT | Full Stage 2 review output |
 
-This separation enables error recovery: if Stage 2 fails (Ollama crashes), the attempt is already saved. User can retry the review with `lcgrade review <slug>` without re-running tests.
+This separation enables error recovery: if Stage 2 fails (Ollama crashes), the attempt is already saved. User can retry the review with `lcgrade review <slug>` without re-running tests. Durable review progress lives on `problems` (`review_generated`, `review_acknowledged`); the `reviews` table remains an event/history table for the actual generated analysis.
 
 Querying is also cleaner:
 - "Show all attempts" → `SELECT * FROM attempts`
@@ -586,6 +631,8 @@ class TestOutput:
     error: str | None       # Exception message if crashed
     runtime_ms: float       # Wall-clock time for this test case
     status: str             # "ok" | "error" | "TLE" | "MLE"
+    captured_stdout: str = ""
+    captured_stderr: str = ""
 
 @dataclass
 class RawOutput:
@@ -599,7 +646,8 @@ class RawOutput:
 class RunResult:
     outputs: list[TestOutput]   # One per test case
     compile_error: str | None = None
-    status: str = "ok"          # "ok" | "compile_error" | "TLE" | "MLE"
+    harness_error: str | None = None
+    status: str = "ok"          # "ok" | "compile_error" | "harness_error" | "TLE" | "MLE"
 
 class Runner(ABC):
     """Base class for language-specific code execution.
@@ -614,14 +662,14 @@ class Runner(ABC):
 
     @abstractmethod
     def validate(self, source_path: str, function_name: str, params: list[dict]) -> str | None:
-        """Preflight check: verify function signature exists and matches.
-        Returns None if valid, error message if not."""
+        """Preflight check: parse source, verify expected function exists,
+        and verify required arity. Returns None if valid, error message if not."""
         ...
 
     @abstractmethod
     def generate_harness(self, source_path: str, function_name: str, test_cases: list[dict]) -> str:
         """Generate a test harness script that imports user code,
-        runs test cases, and outputs raw results as JSON.
+        runs test cases, and writes structured results to a temp file.
         The harness captures output but does NOT compare against expected."""
         ...
 
@@ -634,30 +682,41 @@ class Runner(ABC):
     @abstractmethod
     def execute(self, harness_path: str, work_dir: str) -> RawOutput:
         """Run the harness in a subprocess with timeout and memory limits.
-        Returns raw subprocess output — does NOT parse JSON.
+        Returns raw subprocess output — does NOT parse result payloads.
         Override only to change how the subprocess is launched."""
         ...
 
     # --- Concrete: shared logic, subclasses inherit for free ---
 
     def parse_output(self, raw: RawOutput) -> RunResult:
-        """Parse raw subprocess output into structured RunResult.
-        Handles TLE, MLE, and malformed output gracefully.
-        Override only if harness output format differs (e.g., non-JSON)."""
+        """Parse structured harness output into RunResult.
+        Handles TLE, MLE, missing/incomplete harness output, and malformed
+        result files gracefully."""
         if raw.timed_out:
             return RunResult(outputs=[], status="TLE")
         if raw.memory_exceeded:
             return RunResult(outputs=[], status="MLE")
         try:
-            results = json.loads(raw.stdout)
+            results = self.load_results(raw)
             outputs = [TestOutput(**r) for r in results]
             return RunResult(outputs=outputs)
+        except FileNotFoundError:
+            return RunResult(
+                outputs=[],
+                harness_error="Harness did not produce a results file.",
+                status="harness_error"
+            )
         except json.JSONDecodeError:
             return RunResult(
                 outputs=[],
-                compile_error=f"Harness output was not valid JSON: {raw.stdout[:200]}",
-                status="compile_error"
+                harness_error="Harness results file was not valid JSON.",
+                status="harness_error"
             )
+
+    def load_results(self, raw: RawOutput) -> list[dict]:
+        """Load structured results emitted by the harness.
+        Beta design: the harness writes to a temp JSON file rather than stdout."""
+        ...
 
     def run(self, source_path: str, function_name: str, params: list[dict], test_cases: list[dict], work_dir: str) -> RunResult:
         """Full execution pipeline: validate → compile → generate harness → execute → parse.
@@ -680,11 +739,11 @@ class Runner(ABC):
 
 **`PythonRunner` (ships in beta):**
 
-- `validate()` — uses Python's `ast` module to parse the file and check function name, parameter names, and type hints match the problem metadata
-- `generate_harness()` — writes a Python script that imports the user's function, iterates over test cases, captures raw output/errors as JSON. Does NOT compare against expected values.
+- `validate()` — uses Python's `ast` module to parse the file, fail fast on syntax errors, verify the expected function exists, and verify required arity. Parameter names and type hints are advisory-only in beta.
+- `generate_harness()` — writes a Python script that imports the user's function, iterates over test cases, captures per-test output/errors/stdout/stderr, and writes structured results to a temp JSON file. Does NOT compare against expected values.
 - `compile()` — no-op, returns None (Python is interpreted)
-- `execute()` — runs via `subprocess.run()` with timeout, monitors memory via `psutil`. Returns `RawOutput` with stdout/stderr/exit code. Does NOT parse JSON.
-- `parse_output()` — inherited from base class. Parses harness JSON into `RunResult`. No override needed.
+- `execute()` — runs via `subprocess.run()` with timeout, monitors memory via `psutil`. Returns `RawOutput` with stdout/stderr/exit code.
+- `parse_output()` — inherited from base class. Loads the harness results file into `RunResult`. No override needed.
 
 **Future runners (post-beta):**
 
@@ -719,6 +778,18 @@ class Evaluator:
 
     def evaluate(self, run_result: RunResult, test_cases: list[dict],
                  default_validator: str = "exact_match") -> list[TestVerdict]:
+        if run_result.status in {"TLE", "MLE", "compile_error", "harness_error"}:
+            return [
+                TestVerdict(
+                    passed=False,
+                    expected=case.get("expected"),
+                    actual=None,
+                    error=run_result.compile_error or run_result.harness_error,
+                    status=run_result.status
+                )
+                for case in test_cases
+            ]
+
         verdicts = []
         for output, case in zip(run_result.outputs, test_cases):
             # If the harness reported an error, propagate it
@@ -755,28 +826,51 @@ The `PythonRunner.generate_harness()` produces something like:
 
 ```python
 # Auto-generated by lcgrade — captures raw output only, does NOT judge correctness
-import json, sys, time
+import contextlib
+import io
+import json
+import sys
+import time
 
 # Test cases loaded from temp file (avoids arg length limits for large test suites)
 with open(sys.argv[1]) as f:
     test_cases = json.load(f)
+
+results_path = sys.argv[2]
 
 from solution import two_sum  # import after loading test cases to catch SyntaxError
 
 results = []
 for case in test_cases:
     start = time.perf_counter()
+    stdout_buffer = io.StringIO()
+    stderr_buffer = io.StringIO()
     try:
-        output = two_sum(**case["input"])
+        with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+            output = two_sum(**case["input"])
         elapsed = (time.perf_counter() - start) * 1000
-        results.append({"output": output, "runtime_ms": elapsed, "status": "ok"})
+        results.append({
+            "output": output,
+            "runtime_ms": elapsed,
+            "status": "ok",
+            "captured_stdout": stdout_buffer.getvalue(),
+            "captured_stderr": stderr_buffer.getvalue(),
+        })
     except Exception as e:
         elapsed = (time.perf_counter() - start) * 1000
-        results.append({"error": f"{type(e).__name__}: {e}", "runtime_ms": elapsed, "status": "error"})
-print(json.dumps(results))
+        results.append({
+            "error": f"{type(e).__name__}: {e}",
+            "runtime_ms": elapsed,
+            "status": "error",
+            "captured_stdout": stdout_buffer.getvalue(),
+            "captured_stderr": stderr_buffer.getvalue(),
+        })
+
+with open(results_path, "w") as f:
+    json.dump(results, f)
 ```
 
-Note: test cases are loaded from a temp file (not `sys.argv`) to avoid OS argument length limits with large test suites.
+Note: test cases are loaded from a temp file (not inlined in `sys.argv`) to avoid OS argument length limits with large test suites. The harness writes structured results to a separate temp JSON file rather than stdout so user `print()` calls do not corrupt the machine-readable result channel.
 
 ### Execution Flow
 
@@ -837,7 +931,9 @@ class PipelineResult:
     run_result: RunResult | None
     verdicts: list[TestVerdict] | None
     review_text: str | None
-    review_score: int | None
+    review_generated: bool
+    review_acknowledged: bool
+    followup_completed: bool
     extensions: list[ExtensionResult]
     error: str | None = None          # Pipeline-level error message
 
@@ -982,10 +1078,16 @@ The problem statement also remains available as standalone markdown at `~/.lcgra
 ```
  lcgrade · Two Sum · Easy
 
- Bundled Tests         8/8 passed  ✓
+ Provided Tests        8/8 passed  ✓
  LLM-Generated Tests   3/4 passed  ✗
    ✗ Case: nums=[], target=0 → expected [] but got error
      RuntimeError: list index out of range (line 4)
+
+ Progress
+   Solved               ✓ auto-solved from provided tests
+   Review Generated     ✓
+   Review Acknowledged  ·
+   Follow-up Complete   ·
 
  Complexity
    Time:  O(n)
@@ -1000,8 +1102,6 @@ The problem statement also remains available as standalone markdown at `~/.lcgra
    You're not handling the edge case where nums is empty.
 
    Follow-up: Could you solve this with O(1) space?
-
- Score: 87/100
 ```
 
 #### `lcgrade list` output
@@ -1037,7 +1137,9 @@ The problem statement also remains available as standalone markdown at `~/.lcgra
 
  Solved:     12/75  ██████░░░░░░░░░  16%
  Attempted:  18/75
- Avg Score:  74/100
+ Review Generated:  14
+ Review Acknowledged:  9
+ Follow-up Completed:  6
  Streak:     3 days
 
  By Difficulty
@@ -1045,26 +1147,28 @@ The problem statement also remains available as standalone markdown at `~/.lcgra
    Medium:  4/39   ███░░░░░░░░░░░  10%
    Hard:    0/10   ░░░░░░░░░░░░░░   0%
 
- Weakest Tags: dynamic-programming, graph, tree
+ Weakest Tags (by provided test pass rate): dynamic-programming, graph, tree
 ```
 
-"Weakest Tags" = lowest average scores grouped by tag from the attempts table.
+"Weakest Tags" = lowest provided-test pass rate grouped by tag from problem progress / attempt history.
 
 #### `lcgrade history` output
 
 ```
  lcgrade · History · Two Sum
 
- #  Date           Tests     Score  Complexity  Status
- 1  Apr 10, 2:14p  6/8       —      —           fail
- 2  Apr 10, 3:01p  8/8       62     O(n²)       pass (reviewed)
- 3  Apr 11, 9:30a  8/8       87     O(n)        pass (reviewed)
-                              ↑ +25
+ #  Date           Provided Tests  Review   Follow-up  Complexity  Status
+ 1  Apr 10, 2:14p  6/8             ·        ·          —           attempted
+ 2  Apr 10, 3:01p  8/8             ✓ gen    ·          O(n²)       auto-solved
+ 3  Apr 11, 9:30a  8/8             ✓ ack    ✓          O(n)        completed
 
- Best: #3 · O(n) · 87/100 · Solved in 0:42
+ Milestones:
+   Solved on Apr 10, 3:01p
+   Review acknowledged on Apr 11, 9:30a
+   Follow-up completed on Apr 11, 9:30a
 ```
 
-Shows progression across attempts — scores improving, complexity getting better. The `↑ +25` delta highlights improvement between reviewed attempts. Attempts without reviews (user only ran tests) show `—` for score and complexity.
+Shows progression across attempts and milestone completion. Attempts without reviews show `·` for review/follow-up state and `—` for complexity if no review exists yet.
 
 #### `lcgrade chat` output (beta: single-shot)
 
@@ -1179,7 +1283,7 @@ lcgrade = "lcgrade.cli:app"
 ```
 
 **Key decisions:**
-- `ruff` is called via `subprocess` (not imported as a library) so it's a dev dependency for development but needs to be installed on the user's machine. `lcgrade init` should check for ruff and suggest `pip install ruff` if missing — don't make it a hard runtime dependency since preflight linting is optional.
+- `ruff` is called via `subprocess` (not imported as a library) so it's a dev dependency for development but needs to be installed on the user's machine. `lcgrade init` should check for ruff and suggest `pip install ruff` if missing. Since linting is advisory-only, missing `ruff` should never block solve execution.
 - `httpx` over `requests` — async support for future use, lighter weight.
 - `mlx` is an optional extra, not a core dependency — keeps the base install small and cross-platform compatible (MLX only works on Apple Silicon).
 
@@ -1328,7 +1432,7 @@ These are design decisions and implementation tasks that still need to be resolv
 
 | # | Item | Notes |
 |---|------|-------|
-| 5 | Scoring/weighting system | How do test results and qualitative review combine? Letter grade, percentage, pass/fail? |
+| 5 | Future scoring model | If a numeric score is added later, it should measure analysis depth/practice completeness rather than correctness |
 | 6 | Compaction threshold | At what % of context budget to trigger summarization (~70% suggested) |
 | 7 | Extensibility plugin format | How are custom community extensions defined? Prompt templates? Python plugins? Config-driven? |
 
@@ -1346,6 +1450,7 @@ These are design decisions and implementation tasks that still need to be resolv
 |---|------|-------|
 | 11 | Docker sandbox option (v1) | `DockerRunner` wrapping any language runner inside a container |
 | 12 | Performance benchmarking harness | Generating varying-size inputs, timing, presenting the scaling curve |
+| 13 | Stronger isolation model | Current beta sandbox is subprocess guardrails for a local tool, not strict OS/container isolation |
 
 ### CLI & UX
 
@@ -1392,17 +1497,17 @@ For quick reference, these are the decisions made during the design process:
 1. **All abstractions ship in beta** — Runner, LLMBackend, Validator, Evaluator, and Extension base classes are built upfront. Only the beta-required concrete classes are implemented. Adding new languages, backends, validators, or extensions later is just adding a new class — no core refactoring.
 2. **Ollama first, MLX later** — `OllamaBackend` ships in beta, `MLXBackend` in v1. Both implement `LLMBackend`.
 3. **Files as source of truth, SQLite as index** — Problems are markdown files (git-friendly, human-editable), SQLite indexes them for fast queries and stores user state
-4. **Three-stage eval pipeline with preflight and cache** — Cache check → Preflight (ruff, signature) → Stage 1: Test cases → Stage 2: LLM review → Stage 3: LLM extensibility. Each stage is a natural stopping point.
-5. **Cache on (code_hash, test_mode, tests_hash)** — If code, test mode, and bundled tests haven't changed, skip execution and show cached results. `--force` bypasses. `--extend` only runs new extensions without re-running Stages 1-2. Problem bank updates invalidate the cache via `tests_hash`.
-6. **Preflight checks are fail-fast gates** — ruff and function signature validation run before any test execution to catch obvious issues immediately
+4. **Three-stage eval pipeline with preflight and cache** — Cache check → Preflight (syntax, signature, optional lint notes) → Stage 1: Test cases → Stage 2: LLM review → Stage 3: LLM extensibility. Each stage is a natural stopping point.
+5. **Cache on (code_hash, test_mode, tests_hash)** — If code, test mode, and provided tests haven't changed, skip execution and show cached results. `--force` bypasses. `--extend` only runs new extensions without re-running Stages 1-2. Problem bank updates invalidate the cache via `tests_hash`.
+6. **Preflight checks are fail-fast only where correctness matters** — syntax errors and missing/wrong-arity functions block execution; lint/style feedback is advisory
 7. **Runner executes, Evaluator judges** — Single Responsibility. Runner captures raw outputs, Evaluator compares against expected values using Validators. Neither does the other's job.
 8. **LLM review and extensibility are separate stages** — Stage 2 is a fixed, opinionated analysis (same for every problem). Stage 3 is optional, pluggable, user-controlled (interview questions, custom review criteria).
 9. **Pipeline saves results per stage** — Stage 1 results saved immediately to `attempts` table. Stage 2 saved to `reviews` table. If a later stage fails, earlier results are preserved. `lcgrade review` re-runs Stages 2/3 without re-executing tests.
-10. **Graceful degradation** — Tool always does something useful. No Ollama? Fall back to bundled tests. Stage 2 fails? Show test results and offer retry.
+10. **Graceful degradation** — Tool always does something useful. No Ollama? Fall back to provided tests. Stage 2 fails? Show test results and offer retry.
 11. **LLM for complexity analysis from code structure** — AST heuristics are brittle; the LLM reads code and identifies patterns (nested loops, hash map usage, recursion with memoization). Empirical timing added in v1 to complement.
 12. **Bundled test answers pre-computed** — cojudge only has inputs; we run Python reference solutions once to generate expected outputs that ship with the package
 13. **LLM fallback for missing answers** — When no reference solution exists (custom problems), LLM generates expected outputs, flagged as unverified
-14. **subprocess over Docker for beta** — Users run their own code locally; Docker adds friction without proportional safety benefit
+14. **subprocess over Docker for beta** — Users run their own code locally; Docker adds friction without proportional safety benefit. This is guardrail-based execution, not strict isolation.
 15. **Max 10 snapshots per problem** — Caps storage, oldest deleted first, `lcgrade prune` for manual cleanup
 16. **Chat history wiped on solve/reset** — No long-term chat accumulation, keeps storage bounded
 17. **Compaction over truncation** — When approaching context limit, summarize old messages instead of silently dropping them
@@ -1438,11 +1543,13 @@ Build in this order to get a working end-to-end flow as fast as possible. Resist
 
 ### What Will Be Harder Than It Looks
 
-**Prompt engineering for test case generation.** Getting a 7B local model to reliably output valid JSON test cases is finicky. The model will sometimes output commentary before the JSON, nest it in markdown, or produce test cases with subtly wrong expected outputs. The `generate_json()` retry logic handles malformed JSON, but semantically wrong outputs (valid JSON, wrong answer) are harder to catch. Recommendation: start with `--tests bundled` as the effective default for beta. Don't let unreliable LLM test generation be the first thing users experience. Get the bundled test path rock-solid first.
+**Prompt engineering for test case generation.** Getting a 7B local model to reliably output valid JSON test cases is finicky. The model will sometimes output commentary before the JSON, nest it in markdown, or produce test cases with subtly wrong expected outputs. The `generate_json()` retry logic handles malformed JSON, but semantically wrong outputs (valid JSON, wrong answer) are harder to catch. Recommendation: start with `--tests bundled` as the effective default for beta. Don't let unreliable LLM test generation be the first thing users experience. Get the provided-test path rock-solid first.
+
+**Harness transport and run-level failure handling.** Do not rely on stdout as the transport for structured harness results. User `print()` calls can corrupt stdout and make valid runs look broken. Write structured per-test results to a temp JSON file, capture user stdout/stderr separately, and let the Evaluator explicitly handle run-level failures like `TLE`, `MLE`, `compile_error`, and `harness_error`.
 
 **The cojudge conversion script.** The doc says "one-time conversion" but it's non-trivial. cojudge problems have Java-specific input formats, their `metadata.json` schema differs from our YAML schema, and some problems have edge cases in how inputs are structured. Budget a full day, not an afternoon. Start with 5 problems, validate the format, then batch-convert the rest.
 
-**`ruff` as a preflight check.** ruff is opinionated — it will flag style issues in valid solutions that have nothing to do with correctness. A user who writes `nums = list(filter(lambda x: x > 0, arr))` gets a warning about using a list comprehension instead. This can feel like the grader is being pedantic. Recommendation: make ruff preflight optional (`--lint` flag) or only show ruff output in the Code Quality section of Stage 2 review rather than as a blocking preflight gate. Signature validation should still be a hard gate.
+**Syntax validation before linting.** The hard preflight gate should be `ast.parse()` plus function existence/arity validation, not `ruff`. Users expect syntax errors and missing required functions to stop execution immediately. They do not expect style suggestions to block grading. Keep linting advisory and surface it only when available.
 
 ### Implementation Notes
 
