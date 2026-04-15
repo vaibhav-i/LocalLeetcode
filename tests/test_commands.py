@@ -64,8 +64,16 @@ def test_setup_reports_paths_and_unavailable_backend(
     isolated_app_paths: AppPaths,
 ) -> None:
     class UnavailableBackend:
+        model = "llama3.2"
+
         def available(self) -> bool:
             return False
+
+        def installed_models(self) -> tuple[str, ...]:
+            return ()
+
+        def unavailable_reason(self) -> str:
+            return "Ollama is not reachable."
 
     monkeypatch.setattr(cli_module, "OllamaBackend", lambda: UnavailableBackend())
 
@@ -75,7 +83,9 @@ def test_setup_reports_paths_and_unavailable_backend(
     assert str(isolated_app_paths.workspace_root) in result.stdout
     assert ".lcgrade/lcgrade.db" in result.stdout
     assert "Problem bank indexable: yes" in result.stdout
+    assert "Ollama model: llama3.2" in result.stdout
     assert "Ollama reachable: no" in result.stdout
+    assert "Installed Ollama models: none detected" in result.stdout
     assert "repo-local problems/" in result.stdout
 
 

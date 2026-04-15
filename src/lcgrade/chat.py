@@ -135,11 +135,12 @@ def run_chat_turn(
 
     try:
         if not llm.available():
+            reason = llm.unavailable_reason() or "LLM backend unavailable."
             return ChatTurnResult(
                 slug=slug,
                 response_text=None,
                 session_id=session_id,
-                skipped_reason="LLM backend unavailable.",
+                skipped_reason=reason,
             )
     except Exception as exc:
         return ChatTurnResult(

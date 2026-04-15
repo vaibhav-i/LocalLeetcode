@@ -179,6 +179,11 @@ def generate_test_generation(
         )
 
     if llm is None or not llm.available():
+        warning = "LLM backend unavailable; using bundled tests only."
+        if llm is not None:
+            reason = llm.unavailable_reason()
+            if reason:
+                warning = f"{reason} Using bundled tests only."
         return TestGenerationResult(
             problem_slug=problem.slug,
             requested_test_mode=normalized,
@@ -189,7 +194,7 @@ def generate_test_generation(
             llm_available=False,
             llm_used=False,
             llm_model_info=None,
-            warning="LLM backend unavailable; using bundled tests only.",
+            warning=warning,
         )
 
     prompt = build_test_generation_prompt(

@@ -124,10 +124,11 @@ def generate_beta_stage2_review(
 
     try:
         if not llm.available():
+            reason = llm.unavailable_reason() or "LLM backend unavailable."
             return Stage2ReviewResult(
                 generated=False,
                 review_text=None,
-                reason="LLM backend unavailable.",
+                reason=reason,
             )
     except Exception as exc:
         return Stage2ReviewResult(

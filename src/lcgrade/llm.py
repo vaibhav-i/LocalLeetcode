@@ -10,6 +10,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 import json
+import os
 import time
 from typing import Any, Mapping, Sequence
 from urllib import error, request
@@ -54,6 +55,16 @@ class LLMBackend(ABC):
     @abstractmethod
     def model_info(self) -> ModelInfo:
         """Return metadata about the active model."""
+
+    def unavailable_reason(self) -> str | None:
+        """Return a user-facing reason when the backend cannot serve requests."""
+
+        try:
+            if self.available():
+                return None
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            return f"LLM backend unavailable: {exc}"
+        return "LLM backend unavailable."
 
     def generate_json(
         self,
@@ -156,13 +167,24 @@ class OllamaBackend(LLMBackend):
 
     def __init__(
         self,
-        model: str = "llama3.2",
-        base_url: str = "http://localhost:11434",
-        timeout: float = 30.0,
+        model: str | None = None,
+        base_url: str | None = None,
+        timeout: float | None = None,
     ) -> None:
-        self.model = model
-        self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
+        self.model = model or os.environ.get("LCGRADE_OLLAMA_MODEL", "llama3.2")
+        resolved_base_url = base_url or os.environ.get("LCGRADE_OLLAMA_BASE_URL", "http://localhost:11434")
+        self.base_url = resolved_base_url.rstrip("/")
+        timeout_value = timeout
+        if timeout_value is None:
+            raw_timeout = os.environ.get("LCGRADE_OLLAMA_TIMEOUT")
+            if raw_timeout:
+                try:
+                    timeout_value = float(raw_timeout)
+                except ValueError:
+                    timeout_value = 30.0
+            else:
+                timeout_value = 30.0
+        self.timeout = float(timeout_value)
 
     def generate(
         self,
@@ -202,10 +224,23 @@ class OllamaBackend(LLMBackend):
 
     def available(self) -> bool:
         try:
-            self._request_json("GET", "/api/tags", None)
+            return self.model_installed()
         except Exception:
             return False
-        return True
+
+    def unavailable_reason(self) -> str | None:
+        try:
+            models = self.installed_models()
+        except Exception as exc:
+            return f"Could not reach Ollama at {self.base_url}: {exc}"
+        if self._model_matches_any(models):
+            return None
+        if models:
+            return (
+                f"Ollama is running, but model {self.model!r} is not installed. "
+                f"Installed models: {', '.join(models)}"
+            )
+        return f"Ollama is running, but no models are installed. Expected {self.model!r}."
 
     def model_info(self) -> ModelInfo:
         try:
@@ -226,6 +261,35 @@ class OllamaBackend(LLMBackend):
             quantization=quantization,
             backend="ollama",
         )
+
+    def installed_models(self) -> tuple[str, ...]:
+        data = self._request_json("GET", "/api/tags", None)
+        models = data.get("models", [])
+        if not isinstance(models, Sequence):
+            return ()
+        names: list[str] = []
+        for item in models:
+            if isinstance(item, Mapping):
+                name = item.get("name")
+                if name:
+                    names.append(str(name))
+        return tuple(names)
+
+    def model_installed(self) -> bool:
+        return self._model_matches_any(self.installed_models())
+
+    def _model_matches_any(self, installed_models: Sequence[str]) -> bool:
+        target = self.model.strip()
+        if not target:
+            return False
+        target_base = target.split(":", 1)[0]
+        for installed in installed_models:
+            installed_text = str(installed).strip()
+            if installed_text == target:
+                return True
+            if installed_text.split(":", 1)[0] == target_base:
+                return True
+        return False
 
     def _request_json(
         self,

@@ -14,7 +14,7 @@ python3 -m pytest tests -q
 Result:
 
 - Status: pass
-- Summary: `41 passed in 1.51s`
+- Summary: `44 passed in 2.18s`
 
 Subsystem coverage summary:
 
@@ -25,6 +25,7 @@ Subsystem coverage summary:
 - Review pipeline: pass
 - Command surface: pass
 - Test-generation fallback behavior: pass
+- Ollama backend configuration and model-availability checks: pass
 
 ## Manual CLI Coverage
 

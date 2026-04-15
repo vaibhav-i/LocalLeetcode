@@ -111,7 +111,7 @@ def test_generate_test_generation_falls_back_when_backend_unavailable(tmp_path: 
     assert result.llm_requested is True
     assert result.llm_available is False
     assert result.llm_used is False
-    assert result.warning == "LLM backend unavailable; using bundled tests only."
+    assert result.warning == "LLM backend unavailable. Using bundled tests only."
     assert len(result.bundled_test_cases) == 1
     assert result.generated_test_cases == ()
     assert len(result.combined_test_cases()) == 1

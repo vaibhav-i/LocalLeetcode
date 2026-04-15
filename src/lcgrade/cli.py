@@ -136,10 +136,12 @@ def setup() -> None:
     ollama_available = False
     ollama_error: str | None = None
     backend = OllamaBackend()
+    installed_models: tuple[str, ...] = ()
     try:
         ollama_available = backend.available()
+        installed_models = backend.installed_models()
         if not ollama_available:
-            ollama_error = "Ollama is not reachable."
+            ollama_error = backend.unavailable_reason() or "Ollama is not reachable."
     except Exception as exc:  # pragma: no cover - defensive status reporting
         ollama_error = str(exc)
 
@@ -154,7 +156,13 @@ def setup() -> None:
             if indexing_error is None
             else f"Problem bank indexable: no ({indexing_error})"
         ),
+        f"Ollama model: {backend.model}",
         f"Ollama reachable: {'yes' if ollama_available else 'no'}",
+        (
+            "Installed Ollama models: " + ", ".join(installed_models)
+            if installed_models
+            else "Installed Ollama models: none detected"
+        ),
         *(["Ollama detail: " + ollama_error] if ollama_error else []),
         "v0 uses repo-local problems/ and .lcgrade/ paths.",
     ]

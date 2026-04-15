@@ -50,6 +50,7 @@ def test_solve_smoke() -> None:
     assert "Backend: ollama" in result.stdout
     assert "LLM tests: 0/0" in result.stdout
     assert "Bundled tests: 0/2" in result.stdout
+    assert "Using bundled tests only." in result.stdout
 
 
 def test_solve_uses_cache_for_unchanged_solution() -> None:
@@ -83,7 +84,7 @@ def test_solve_accepts_explicit_mlx_backend_and_falls_back_for_llm_tests() -> No
 
     assert result.exit_code == 0
     assert "Backend: mlx" in result.stdout
-    assert "LLM backend unavailable; using bundled tests only." in result.stdout
+    assert "Using bundled tests only." in result.stdout
 
 
 def test_review_accepts_explicit_mlx_backend() -> None:
