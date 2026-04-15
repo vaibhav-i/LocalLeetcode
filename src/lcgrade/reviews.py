@@ -18,6 +18,7 @@ from .db import get_metadata_value, mark_problem_review_generated
 from .extensions import ExtensionResult, ExtensionContext, get_extension
 from .llm import LLMBackend
 from .problems import ProblemDocument, load_problem_by_slug
+from .types import TestVerdict
 
 DEFAULT_STAGE3_EXTENSIONS: tuple[str, ...] = ("interview", "optimize")
 
@@ -238,11 +239,57 @@ def persist_extension_results(
             persist_extension_result(
                 conn,
                 review_id=review_id,
-                extension_name=result.title,
+                extension_name=result.name,
                 output_text=result.content,
             )
         )
     return inserted_ids
+
+
+def build_extension_verdicts(attempt: Mapping[str, Any]) -> list[TestVerdict]:
+    """Build a typed Stage 1 verdict summary from saved attempt facts."""
+
+    verdicts: list[TestVerdict] = []
+    bundled_total = int(_attempt_value(attempt, "bundled_total", 0))
+    bundled_passed = int(_attempt_value(attempt, "bundled_passed", 0))
+    if bundled_total > 0:
+        verdicts.append(
+            TestVerdict(
+                name="bundled-tests",
+                passed=bundled_passed == bundled_total,
+                input={"scope": "bundled", "test_mode": str(_attempt_value(attempt, "test_mode", "unknown"))},
+                expected={"passed": bundled_total, "total": bundled_total},
+                actual={"passed": bundled_passed, "total": bundled_total},
+                source="verified",
+            )
+        )
+
+    llm_total = int(_attempt_value(attempt, "llm_total", 0))
+    llm_passed = int(_attempt_value(attempt, "llm_passed", 0))
+    if llm_total > 0:
+        verdicts.append(
+            TestVerdict(
+                name="llm-tests",
+                passed=llm_passed == llm_total,
+                input={"scope": "llm", "test_mode": str(_attempt_value(attempt, "test_mode", "unknown"))},
+                expected={"passed": llm_total, "total": llm_total},
+                actual={"passed": llm_passed, "total": llm_total},
+                source="llm_verified",
+            )
+        )
+
+    status = str(_attempt_value(attempt, "status", "unknown"))
+    verdicts.append(
+        TestVerdict(
+            name="attempt-status",
+            passed=status == "pass",
+            input={"scope": "attempt"},
+            expected="pass",
+            actual=status,
+            source="verified",
+        )
+    )
+    return verdicts
 
 
 def run_registered_extensions(
@@ -257,7 +304,7 @@ def run_registered_extensions(
     context = ExtensionContext(
         problem_statement=problem.body,
         user_code=str(_attempt_value(attempt, "code_snapshot", "")),
-        verdicts=[],
+        verdicts=build_extension_verdicts(attempt),
         review_output=review_text,
         timing_data=None,
     )
@@ -269,6 +316,7 @@ def run_registered_extensions(
         except KeyError as exc:
             results.append(
                 ExtensionResult(
+                    name=extension_name,
                     title=extension_name,
                     content=f"Unknown extension {extension_name!r}: {exc}",
                 )
@@ -280,6 +328,7 @@ def run_registered_extensions(
         except Exception as exc:
             results.append(
                 ExtensionResult(
+                    name=extension.name(),
                     title=extension.name(),
                     content=f"Extension {extension_name!r} failed: {exc}",
                 )

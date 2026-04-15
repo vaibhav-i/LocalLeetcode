@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, TypeVar
 
 from .llm import LLMBackend
+from .types import TestVerdict
 
 
 @dataclass(slots=True, frozen=True)
@@ -24,7 +25,7 @@ class ExtensionContext:
 
     problem_statement: str
     user_code: str
-    verdicts: list[Any]
+    verdicts: list[TestVerdict]
     review_output: str
     timing_data: list[TimingData] | None = None
 
@@ -33,6 +34,7 @@ class ExtensionContext:
 class ExtensionResult:
     """A rendered extension section."""
 
+    name: str
     title: str
     content: str
 
@@ -128,7 +130,11 @@ class InterviewQuestions(Extension):
             temperature=0.4,
             max_tokens=512,
         )
-        return ExtensionResult(title="Interview Follow-ups", content=response.text)
+        return ExtensionResult(
+            name=self.name(),
+            title="Interview Follow-ups",
+            content=response.text,
+        )
 
 
 @register_extension("optimize")
@@ -153,4 +159,8 @@ class OptimizationPrompt(Extension):
             temperature=0.3,
             max_tokens=700,
         )
-        return ExtensionResult(title="Optimization Suggestions", content=response.text)
+        return ExtensionResult(
+            name=self.name(),
+            title="Optimization Suggestions",
+            content=response.text,
+        )

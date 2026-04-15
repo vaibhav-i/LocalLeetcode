@@ -80,9 +80,15 @@ def test_review_problem_generates_stage2_and_extensions(db_conn) -> None:
         "Interview Follow-ups",
         "Optimization Suggestions",
     ]
+    assert [item.name for item in result.extension_results] == [
+        "interview",
+        "optimize",
+    ]
     assert backend.prompts[0]["prompt"].startswith("You are lcgrade's Stage 2 reviewer")
     assert "Submitted code:" in backend.prompts[0]["prompt"]
     assert code_snapshot.strip() in backend.prompts[0]["prompt"]
+    assert "Verdicts:" in backend.prompts[1]["prompt"]
+    assert "bundled-tests" in backend.prompts[1]["prompt"]
 
     review_row = db_conn.execute("SELECT * FROM reviews WHERE attempt_id = ?", (attempt_id,)).fetchone()
     assert review_row is not None
@@ -93,8 +99,8 @@ def test_review_problem_generates_stage2_and_extensions(db_conn) -> None:
         (result.review_id,),
     ).fetchall()
     assert [row["extension_name"] for row in extension_rows] == [
-        "Interview Follow-ups",
-        "Optimization Suggestions",
+        "interview",
+        "optimize",
     ]
     assert "hash map lookup" in extension_rows[0]["output_text"]
     assert "space-usage trade-offs" in extension_rows[1]["output_text"]
