@@ -135,6 +135,12 @@ def solve(
                     f"Problem: {result.problem.metadata.title} ({result.problem.slug})",
                     f"Function: {result.problem.metadata.function_name}",
                     f"Tests mode: {result.attempt.test_mode}",
+                    (
+                        f"Code unchanged since last attempt. "
+                        f"Showing cached results."
+                        if result.used_cache
+                        else "New code or test inputs detected."
+                    ),
                     f"Bundled tests: {result.attempt.bundled_passed}/{result.attempt.bundled_total}",
                     f"Status: {result.attempt.status}",
                     f"Runtime: {result.attempt.runtime_ms:.2f} ms",
