@@ -108,6 +108,9 @@ def test_setup_reports_missing_ollama_binary(
 
     assert result.exit_code == 1
     assert "Ollama is not installed." in result.stdout
+    assert "brew install ollama" in result.stdout
+    assert "ollama serve" in result.stdout
+    assert "python3 -m lcgrade.cli setup" in result.stdout
 
 
 def test_setup_reports_ollama_serve_guidance(
@@ -129,7 +132,8 @@ def test_setup_reports_ollama_serve_guidance(
     result = runner.invoke(app, ["setup"])
 
     assert result.exit_code == 1
-    assert "Run `ollama serve`" in result.stdout
+    assert "ollama serve" in result.stdout
+    assert "python3 -m lcgrade.cli setup" in result.stdout
 
 
 def test_setup_pulls_missing_model_and_persists_config(
@@ -170,6 +174,36 @@ def test_setup_pulls_missing_model_and_persists_config(
     assert "qwen2.5-coder:7b" in result.stdout
     config = load_app_config(isolated_app_paths.config_path)
     assert config == AppConfig(backend="ollama", model="qwen2.5-coder:7b")
+
+
+def test_setup_check_prints_remediation_commands(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_app_paths: AppPaths,
+) -> None:
+    class UnavailableBackend:
+        model = "qwen2.5-coder:7b"
+        base_url = "http://localhost:11434"
+
+        def installed_models(self) -> tuple[str, ...]:
+            return ()
+
+        def model_installed(self) -> bool:
+            return False
+
+        def unavailable_reason(self) -> str:
+            return "Ollama is not reachable."
+
+    monkeypatch.setattr("lcgrade.setup_wizard.OllamaBackend", lambda model=None: UnavailableBackend())
+    monkeypatch.setattr("lcgrade.setup_wizard.detect_ollama_binary", lambda: None)
+
+    result = runner.invoke(app, ["setup", "--check"])
+
+    assert result.exit_code == 0
+    assert "brew install ollama" in result.stdout
+    assert "ollama serve" in result.stdout
+    assert "ollama pull qwen2.5-coder:7b" in result.stdout
+    assert "python3 -m lcgrade.cli start two-sum" in result.stdout
+    assert "python3 -m lcgrade.cli solve" in result.stdout
 
 
 def test_setup_uses_configured_model_for_solve(

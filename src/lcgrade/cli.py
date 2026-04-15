@@ -158,6 +158,13 @@ def setup(
                 else "Installed Ollama models: none detected"
             ),
             *(["Ollama detail: " + status.ollama_detail] if status.ollama_detail else []),
+            "If Ollama is missing, run: `brew install ollama`",
+            "If the Ollama daemon is down, run: `ollama serve`",
+            f"If the recommended model is missing, run: `ollama pull {status.resolved_model}`",
+            "Next product commands:",
+            "  `python3 -m lcgrade.cli setup`",
+            "  `python3 -m lcgrade.cli start two-sum`",
+            "  `python3 -m lcgrade.cli solve`",
             "v0 uses repo-local problems/ and .lcgrade/ paths.",
         ]
         console.print(Panel.fit("\n".join(lines), title="lcgrade setup --check"))
@@ -169,8 +176,10 @@ def setup(
                 "\n".join(
                     [
                         "Ollama is not installed.",
-                        "Install Ollama first, then re-run `lcgrade setup`.",
-                        "Expected command after install: `ollama serve`",
+                        "Run these commands, then re-run setup:",
+                        "`brew install ollama`",
+                        "`ollama serve`",
+                        "`python3 -m lcgrade.cli setup`",
                     ]
                 ),
                 title="lcgrade setup",
@@ -184,7 +193,9 @@ def setup(
                 "\n".join(
                     [
                         "Ollama is installed but not reachable.",
-                        "Run `ollama serve` in another terminal, then re-run `lcgrade setup`.",
+                        "Run these commands, then re-run setup:",
+                        "`ollama serve`",
+                        "`python3 -m lcgrade.cli setup`",
                         *(["Detail: " + status.ollama_detail] if status.ollama_detail else []),
                     ]
                 ),
@@ -201,6 +212,8 @@ def setup(
                         f"Recommended model: {status.resolved_model}",
                         f"Detected RAM: {status.ram_gb:.1f} GB",
                         "The configured model is not installed yet.",
+                        "Recommended command:",
+                        f"`ollama pull {status.resolved_model}`",
                         *(["Detail: " + status.ollama_detail] if status.ollama_detail else []),
                     ]
                 ),
@@ -210,7 +223,13 @@ def setup(
         if not typer.confirm(f"Pull `{status.resolved_model}` now?", default=True):
             console.print(
                 Panel.fit(
-                    f"Setup incomplete. Run `ollama pull {status.resolved_model}` and then `lcgrade setup`.",
+                    "\n".join(
+                        [
+                            "Setup incomplete. Run these commands:",
+                            f"`ollama pull {status.resolved_model}`",
+                            "`python3 -m lcgrade.cli setup`",
+                        ]
+                    ),
                     title="lcgrade setup",
                 )
             )
@@ -226,6 +245,7 @@ def setup(
                             f"Failed to pull {status.resolved_model}.",
                             "Run this manually and retry setup:",
                             f"`ollama pull {status.resolved_model}`",
+                            "`python3 -m lcgrade.cli setup`",
                             *(["Error: " + pull_error] if pull_error else []),
                         ]
                     ),
