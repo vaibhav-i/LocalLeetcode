@@ -9,7 +9,7 @@ from rich.table import Table
 
 from .config import discover_paths
 from .execution import ExecutionError
-from .llm import OllamaBackend
+from .llm import MLXBackend, OllamaBackend
 from .preflight import PreflightError
 from .reviews import DEFAULT_STAGE3_EXTENSIONS, review_problem
 from .solve_flow import SolveFlowError, solve_problem
@@ -29,6 +29,8 @@ def _build_backend(name: str):
     normalized = name.strip().lower()
     if normalized == "ollama":
         return OllamaBackend()
+    if normalized == "mlx":
+        return MLXBackend()
     raise typer.BadParameter(f"Unsupported backend: {name}")
 
 
@@ -85,6 +87,7 @@ def solve(
     tests: str = typer.Option("both", "--tests", help="bundled, llm, or both"),
     solution: Path | None = typer.Option(None, "--solution", help="Path to the solution file to evaluate."),
     force: bool = typer.Option(False, "--force", help="Bypass cached attempts and re-run Stage 1."),
+    backend: str = typer.Option("ollama", "--backend", help="LLM backend to use for test generation."),
 ) -> None:
     paths = discover_paths()
     bootstrap_database, index_problem_bank, load_problem = _lazy_imports()
@@ -104,7 +107,7 @@ def solve(
                 solution_path=solution,
                 requested_test_mode=tests,
                 force=force,
-                llm=OllamaBackend() if tests in {"llm", "both"} else None,
+                llm=_build_backend(backend) if tests in {"llm", "both"} else None,
             )
         except (ExecutionError, PreflightError, SolveFlowError) as exc:
             console.print(f"[red]{exc}[/red]")
@@ -122,6 +125,7 @@ def solve(
                     f"Function: {flow.problem.metadata.function_name}",
                     f"Requested tests mode: {flow.requested_test_mode}",
                     f"Effective tests mode: {flow.effective_test_mode}",
+                    f"Backend: {backend}",
                     (
                         f"Code unchanged since last attempt. "
                         f"Showing cached results."
@@ -193,6 +197,8 @@ def review(
         Panel.fit(
             "\n".join(
                 [
+                    f"Backend: {backend}",
+                    "",
                     result.review_text,
                     "",
                     *(

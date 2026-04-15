@@ -369,3 +369,31 @@ class MockBackend(LLMBackend):
 
     def model_info(self) -> ModelInfo:
         return self._model_info
+
+
+class MLXBackend(LLMBackend):
+    """Beta placeholder for future Apple Silicon-native inference support."""
+
+    def __init__(self, model: str = "mlx-community") -> None:
+        self.model = model
+
+    def generate(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+    ) -> LLMResponse:
+        del prompt, system_prompt, temperature, max_tokens
+        raise NotImplementedError("MLX backend is not implemented yet.")
+
+    def available(self) -> bool:
+        return False
+
+    def model_info(self) -> ModelInfo:
+        return ModelInfo(
+            name=self.model,
+            context_window=4096,
+            quantization="unknown",
+            backend="mlx",
+        )
