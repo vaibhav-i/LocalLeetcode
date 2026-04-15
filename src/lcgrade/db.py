@@ -139,6 +139,8 @@ def configure_connection(conn: sqlite3.Connection) -> sqlite3.Connection:
 
 
 def open_database(path: str | Path) -> sqlite3.Connection:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     return configure_connection(conn)
 
@@ -154,17 +156,18 @@ def get_metadata_value(conn: sqlite3.Connection, key: str, default: str | None =
 
 
 def set_metadata_value(conn: sqlite3.Connection, key: str, value: str | None) -> None:
-    if value is None:
-        conn.execute("DELETE FROM metadata WHERE key = ?", (key,))
-        return
-    conn.execute(
-        """
-        INSERT INTO metadata(key, value)
-        VALUES(?, ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value
-        """,
-        (key, value),
-    )
+    with conn:
+        if value is None:
+            conn.execute("DELETE FROM metadata WHERE key = ?", (key,))
+            return
+        conn.execute(
+            """
+            INSERT INTO metadata(key, value)
+            VALUES(?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (key, value),
+        )
 
 
 def get_db_version(conn: sqlite3.Connection) -> int:
@@ -416,3 +419,121 @@ def mark_problem_review_generated(conn: sqlite3.Connection, slug: str) -> bool:
         flag_column="review_generated",
         timestamp_column="review_generated_at",
     )
+
+
+def reset_problem_milestones(conn: sqlite3.Connection, slug: str) -> bool:
+    with conn:
+        cursor = conn.execute(
+            """
+            UPDATE problems
+            SET
+                auto_solved = 0,
+                auto_solved_at = NULL,
+                manual_solved = 0,
+                manual_solved_at = NULL,
+                review_generated = 0,
+                review_generated_at = NULL,
+                review_acknowledged = 0,
+                review_acknowledged_at = NULL,
+                followup_completed = 0,
+                followup_completed_at = NULL
+            WHERE slug = ?
+            """,
+            (slug,),
+        )
+    return cursor.rowcount > 0
+
+
+def reset_problem_state(conn: sqlite3.Connection, slug: str) -> dict[str, int | bool]:
+    with conn:
+        chat_cursor = conn.execute("DELETE FROM chat_messages WHERE slug = ?", (slug,))
+        attempt_cursor = conn.execute("DELETE FROM attempts WHERE slug = ?", (slug,))
+    milestones_reset = reset_problem_milestones(conn, slug)
+    cleared_active_slug = False
+    if get_active_slug(conn) == slug:
+        clear_active_slug(conn)
+        cleared_active_slug = True
+    return {
+        "attempts_deleted": int(attempt_cursor.rowcount),
+        "chat_messages_deleted": int(chat_cursor.rowcount),
+        "milestones_reset": milestones_reset,
+        "cleared_active_slug": cleared_active_slug,
+    }
+
+
+def prune_attempt_history(conn: sqlite3.Connection, *, keep_per_problem: int = 10) -> int:
+    if keep_per_problem < 0:
+        raise ValueError("keep_per_problem must be non-negative")
+
+    deleted = 0
+    rows = conn.execute("SELECT slug FROM problems ORDER BY slug").fetchall()
+    for row in rows:
+        slug = str(row["slug"])
+        attempt_rows = conn.execute(
+            """
+            SELECT id
+            FROM attempts
+            WHERE slug = ?
+            ORDER BY id DESC
+            """,
+            (slug,),
+        ).fetchall()
+        ids_to_delete = [int(item["id"]) for item in attempt_rows[keep_per_problem:]]
+        if not ids_to_delete:
+            continue
+        placeholders = ", ".join(["?"] * len(ids_to_delete))
+        with conn:
+            cursor = conn.execute(
+                f"DELETE FROM attempts WHERE id IN ({placeholders})",
+                ids_to_delete,
+            )
+        deleted += int(cursor.rowcount)
+    return deleted
+
+
+def insert_chat_message(
+    conn: sqlite3.Connection,
+    *,
+    slug: str,
+    session_id: str,
+    role: str,
+    message: str,
+    hint_tier: int | None = None,
+) -> int:
+    timestamp = datetime.now(timezone.utc).isoformat()
+    with conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO chat_messages (
+                slug,
+                session_id,
+                role,
+                message,
+                hint_tier,
+                timestamp
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (slug, session_id, role, message, hint_tier, timestamp),
+        )
+    return int(cursor.lastrowid)
+
+
+def fetch_recent_chat_messages(
+    conn: sqlite3.Connection,
+    *,
+    slug: str,
+    session_id: str = "default",
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM chat_messages
+        WHERE slug = ? AND session_id = ?
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (slug, session_id, limit),
+    ).fetchall()
+    return [dict(row) for row in reversed(rows)]

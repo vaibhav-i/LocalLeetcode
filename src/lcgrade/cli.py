@@ -7,7 +7,16 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from .chat import run_chat_turn, run_hint_turn
 from .config import discover_paths
+from .db import (
+    bootstrap_database,
+    clear_active_slug,
+    get_active_slug,
+    prune_attempt_history,
+    reset_problem_state,
+    set_active_slug,
+)
 from .execution import ExecutionError
 from .llm import MLXBackend, OllamaBackend
 from .preflight import PreflightError
@@ -19,10 +28,9 @@ console = Console()
 
 
 def _lazy_imports():
-    from .db import bootstrap_database
     from .problems import index_problem_bank, load_problem_by_slug
 
-    return bootstrap_database, index_problem_bank, load_problem_by_slug
+    return index_problem_bank, load_problem_by_slug
 
 
 def _build_backend(name: str):
@@ -34,10 +42,16 @@ def _build_backend(name: str):
     raise typer.BadParameter(f"Unsupported backend: {name}")
 
 
+def _resolve_solution_path(paths, solution: Path | None) -> Path | None:
+    if solution is None or solution.is_absolute():
+        return solution
+    return (paths.workspace_root / solution).resolve()
+
+
 @app.command()
 def init() -> None:
     paths = discover_paths()
-    bootstrap_database, index_problem_bank, _ = _lazy_imports()
+    index_problem_bank, _ = _lazy_imports()
     paths.data_dir.mkdir(parents=True, exist_ok=True)
     connection = bootstrap_database(paths.db_path)
     try:
@@ -55,7 +69,7 @@ def init() -> None:
 @app.command()
 def list_problems() -> None:
     paths = discover_paths()
-    bootstrap_database, index_problem_bank, _ = _lazy_imports()
+    index_problem_bank, _ = _lazy_imports()
     paths.data_dir.mkdir(parents=True, exist_ok=True)
     connection = bootstrap_database(paths.db_path)
     try:
@@ -82,6 +96,137 @@ def list_problems() -> None:
 
 
 @app.command()
+def setup() -> None:
+    paths = discover_paths()
+    index_problem_bank, _ = _lazy_imports()
+    paths.data_dir.mkdir(parents=True, exist_ok=True)
+
+    db_ready = False
+    indexed_count = 0
+    indexing_error: str | None = None
+    connection = None
+    try:
+        connection = bootstrap_database(paths.db_path)
+        db_ready = True
+        try:
+            report = index_problem_bank(connection, paths.problems_dir)
+            indexed_count = report.scanned
+        except Exception as exc:  # pragma: no cover - defensive status reporting
+            indexing_error = str(exc)
+    finally:
+        if connection is not None:
+            connection.close()
+
+    ollama_available = False
+    ollama_error: str | None = None
+    backend = OllamaBackend()
+    try:
+        ollama_available = backend.available()
+        if not ollama_available:
+            ollama_error = "Ollama is not reachable."
+    except Exception as exc:  # pragma: no cover - defensive status reporting
+        ollama_error = str(exc)
+
+    lines = [
+        f"Workspace: {paths.workspace_root}",
+        f"Data dir: {paths.data_dir}",
+        f"DB path: {paths.db_path}",
+        f"Problem bank: {paths.problems_dir}",
+        f"Database ready: {'yes' if db_ready else 'no'}",
+        (
+            f"Problem bank indexable: yes ({indexed_count} problem(s))"
+            if indexing_error is None
+            else f"Problem bank indexable: no ({indexing_error})"
+        ),
+        f"Ollama reachable: {'yes' if ollama_available else 'no'}",
+        *(["Ollama detail: " + ollama_error] if ollama_error else []),
+        "v0 uses repo-local problems/ and .lcgrade/ paths.",
+    ]
+    console.print(Panel.fit("\n".join(lines), title="lcgrade setup"))
+
+
+@app.command()
+def start(slug: str = typer.Argument(..., help="Problem slug to make active.")) -> None:
+    paths = discover_paths()
+    index_problem_bank, load_problem = _lazy_imports()
+    paths.data_dir.mkdir(parents=True, exist_ok=True)
+    connection = bootstrap_database(paths.db_path)
+    try:
+        index_problem_bank(connection, paths.problems_dir)
+        problem = load_problem(connection, slug)
+        if problem is None:
+            raise typer.BadParameter(f"Unknown problem slug: {slug}")
+        set_active_slug(connection, slug)
+    finally:
+        connection.close()
+
+    starter_path = problem.starter_path if problem.starter_path is not None else "No starter.py found."
+    console.print(
+        Panel.fit(
+            "\n".join(
+                [
+                    f"Active problem: {problem.metadata.title} ({problem.slug})",
+                    f"Function: {problem.metadata.function_name}",
+                    f"Starter: {starter_path}",
+                ]
+            ),
+            title="lcgrade start",
+        )
+    )
+
+
+@app.command()
+def reset(slug: str = typer.Argument(..., help="Problem slug whose local state should be cleared.")) -> None:
+    paths = discover_paths()
+    index_problem_bank, load_problem = _lazy_imports()
+    paths.data_dir.mkdir(parents=True, exist_ok=True)
+    connection = bootstrap_database(paths.db_path)
+    try:
+        index_problem_bank(connection, paths.problems_dir)
+        problem = load_problem(connection, slug)
+        if problem is None:
+            raise typer.BadParameter(f"Unknown problem slug: {slug}")
+        summary = reset_problem_state(connection, slug)
+    finally:
+        connection.close()
+
+    lines = [
+        f"Reset local state for {slug}.",
+        f"Attempts deleted: {summary['attempts_deleted']}",
+        f"Chat messages deleted: {summary['chat_messages_deleted']}",
+        f"Milestones reset: {'yes' if summary['milestones_reset'] else 'no'}",
+        f"Cleared active problem: {'yes' if summary['cleared_active_slug'] else 'no'}",
+    ]
+    console.print(Panel.fit("\n".join(lines), title="lcgrade reset"))
+
+
+@app.command()
+def prune() -> None:
+    paths = discover_paths()
+    index_problem_bank, _ = _lazy_imports()
+    paths.data_dir.mkdir(parents=True, exist_ok=True)
+    connection = bootstrap_database(paths.db_path)
+    try:
+        index_problem_bank(connection, paths.problems_dir)
+        deleted = prune_attempt_history(connection, keep_per_problem=10)
+    finally:
+        connection.close()
+
+    console.print(
+        Panel.fit(
+            "\n".join(
+                [
+                    "Pruned attempt history.",
+                    "Retention policy: keep newest 10 attempts per problem.",
+                    f"Deleted attempts: {deleted}",
+                ]
+            ),
+            title="lcgrade prune",
+        )
+    )
+
+
+@app.command()
 def solve(
     slug: str = typer.Argument(..., help="Problem slug to evaluate."),
     tests: str = typer.Option("both", "--tests", help="bundled, llm, or both"),
@@ -90,7 +235,7 @@ def solve(
     backend: str = typer.Option("ollama", "--backend", help="LLM backend to use for test generation."),
 ) -> None:
     paths = discover_paths()
-    bootstrap_database, index_problem_bank, load_problem = _lazy_imports()
+    index_problem_bank, load_problem = _lazy_imports()
 
     paths.data_dir.mkdir(parents=True, exist_ok=True)
     connection = bootstrap_database(paths.db_path)
@@ -104,7 +249,7 @@ def solve(
             flow = solve_problem(
                 connection,
                 problem,
-                solution_path=solution,
+                solution_path=_resolve_solution_path(paths, solution),
                 requested_test_mode=tests,
                 force=force,
                 llm=_build_backend(backend) if tests in {"llm", "both"} else None,
@@ -156,7 +301,7 @@ def review(
     ),
 ) -> None:
     paths = discover_paths()
-    bootstrap_database, index_problem_bank, _ = _lazy_imports()
+    index_problem_bank, _ = _lazy_imports()
     paths.data_dir.mkdir(parents=True, exist_ok=True)
     connection = bootstrap_database(paths.db_path)
     try:
@@ -212,6 +357,58 @@ def review(
             title="lcgrade review",
         )
     )
+
+
+@app.command()
+def chat(
+    message: str = typer.Argument(..., help="Message to send about the active problem."),
+) -> None:
+    paths = discover_paths()
+    index_problem_bank, _ = _lazy_imports()
+    paths.data_dir.mkdir(parents=True, exist_ok=True)
+    connection = bootstrap_database(paths.db_path)
+    try:
+        index_problem_bank(connection, paths.problems_dir)
+        result = run_chat_turn(
+            connection,
+            message=message,
+            llm=_build_backend("ollama"),
+        )
+    finally:
+        connection.close()
+
+    if result.response_text is None:
+        console.print(Panel.fit(result.skipped_reason or "Chat was skipped.", title="lcgrade chat"))
+        raise typer.Exit(code=1)
+
+    console.print(Panel.fit(result.response_text, title="lcgrade chat"))
+
+
+@app.command()
+def hint(
+    tier: int = typer.Argument(..., help="Hint tier: 1, 2, or 3."),
+    message: str | None = typer.Argument(None, help="Optional hint request refinement."),
+) -> None:
+    paths = discover_paths()
+    index_problem_bank, _ = _lazy_imports()
+    paths.data_dir.mkdir(parents=True, exist_ok=True)
+    connection = bootstrap_database(paths.db_path)
+    try:
+        index_problem_bank(connection, paths.problems_dir)
+        result = run_hint_turn(
+            connection,
+            tier=tier,
+            message=message,
+            llm=_build_backend("ollama"),
+        )
+    finally:
+        connection.close()
+
+    if result.response_text is None:
+        console.print(Panel.fit(result.skipped_reason or "Hint was skipped.", title="lcgrade hint"))
+        raise typer.Exit(code=1)
+
+    console.print(Panel.fit(result.response_text, title="lcgrade hint"))
 
 
 def main() -> None:
