@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 import json
 import sqlite3
@@ -291,3 +292,72 @@ def delete_problem_records(conn: sqlite3.Connection, slugs: Iterable[str]) -> in
         placeholders = ", ".join(["?"] * len(slug_list))
         cursor = conn.execute(f"DELETE FROM problems WHERE slug IN ({placeholders})", slug_list)
     return cursor.rowcount
+
+
+def insert_attempt(
+    conn: sqlite3.Connection,
+    *,
+    slug: str,
+    test_mode: str,
+    code_hash: str,
+    tests_hash: str,
+    bundled_passed: int,
+    bundled_total: int,
+    llm_passed: int,
+    llm_total: int,
+    runtime_ms: float,
+    status: str,
+    code_snapshot: str,
+) -> int:
+    timestamp = datetime.now(timezone.utc).isoformat()
+    with conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO attempts (
+                slug,
+                timestamp,
+                test_mode,
+                code_hash,
+                tests_hash,
+                bundled_passed,
+                bundled_total,
+                llm_passed,
+                llm_total,
+                runtime_ms,
+                status,
+                code_snapshot
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                slug,
+                timestamp,
+                test_mode,
+                code_hash,
+                tests_hash,
+                bundled_passed,
+                bundled_total,
+                llm_passed,
+                llm_total,
+                runtime_ms,
+                status,
+                code_snapshot,
+            ),
+        )
+    return int(cursor.lastrowid)
+
+
+def find_cached_attempt(conn: sqlite3.Connection, slug: str, cache_key: CacheKey) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT *
+        FROM attempts
+        WHERE slug = ? AND code_hash = ? AND test_mode = ? AND tests_hash = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (slug, cache_key.code_hash, cache_key.test_mode, cache_key.tests_hash),
+    ).fetchone()
+    if row is None:
+        return None
+    return dict(row)

@@ -30,6 +30,7 @@ class ProblemDefinition:
 
 @dataclass(slots=True)
 class TestCase:
+    name: str
     input: dict[str, Any]
     expected: Any
     validator: str
