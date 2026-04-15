@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import time
 from types import ModuleType
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from .problems import ProblemDocument
 from .preflight import run_preflight
@@ -24,6 +24,8 @@ class ExecutionSummary:
     verdicts: list[TestVerdict]
     bundled_passed: int
     bundled_total: int
+    llm_passed: int
+    llm_total: int
     runtime_ms: float
     status: str
     code_snapshot: str
@@ -57,6 +59,7 @@ def load_test_cases(problem: ProblemDocument) -> list[TestCase]:
 def execute_solution(
     problem: ProblemDocument,
     solution_path: Path | None = None,
+    test_cases: Sequence[TestCase] | None = None,
 ) -> ExecutionSummary:
     resolved_solution = solution_path or problem.starter_path
     if resolved_solution is None or not resolved_solution.exists():
@@ -70,24 +73,31 @@ def execute_solution(
         resolved_solution,
         problem.metadata.function_name,
     )
-    test_cases = load_test_cases(problem)
+    active_test_cases = list(test_cases) if test_cases is not None else load_test_cases(problem)
 
     verdicts: list[TestVerdict] = []
     started = time.perf_counter()
-    for test_case in test_cases:
+    for test_case in active_test_cases:
         verdicts.append(run_test_case(function, test_case))
     runtime_ms = (time.perf_counter() - started) * 1000.0
 
-    bundled_passed = sum(1 for verdict in verdicts if verdict.passed)
-    bundled_total = len(verdicts)
-    status = "pass" if bundled_passed == bundled_total else "fail"
-    if bundled_total == 0:
+    bundled_verdicts = [verdict for verdict, test_case in zip(verdicts, active_test_cases) if test_case.source == "verified"]
+    llm_verdicts = [verdict for verdict, test_case in zip(verdicts, active_test_cases) if test_case.source != "verified"]
+    bundled_passed = sum(1 for verdict in bundled_verdicts if verdict.passed)
+    bundled_total = len(bundled_verdicts)
+    llm_passed = sum(1 for verdict in llm_verdicts if verdict.passed)
+    llm_total = len(llm_verdicts)
+    total_tests = len(active_test_cases)
+    status = "pass" if sum(1 for verdict in verdicts if verdict.passed) == total_tests else "fail"
+    if total_tests == 0:
         status = "error"
 
     return ExecutionSummary(
         verdicts=verdicts,
         bundled_passed=bundled_passed,
         bundled_total=bundled_total,
+        llm_passed=llm_passed,
+        llm_total=llm_total,
         runtime_ms=runtime_ms,
         status=status,
         code_snapshot=code_snapshot,

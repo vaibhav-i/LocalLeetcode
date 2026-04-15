@@ -104,6 +104,7 @@ def solve(
                 solution_path=solution,
                 requested_test_mode=tests,
                 force=force,
+                llm=OllamaBackend() if tests in {"llm", "both"} else None,
             )
         except (ExecutionError, PreflightError, SolveFlowError) as exc:
             console.print(f"[red]{exc}[/red]")
@@ -111,9 +112,7 @@ def solve(
     finally:
         connection.close()
 
-    llm_tests_message = None
-    if flow.requested_test_mode in {"llm", "both"} and flow.effective_test_mode == "bundled":
-        llm_tests_message = "LLM-generated tests are not wired yet; using bundled tests only."
+    llm_tests_message = flow.test_generation_result.warning if flow.test_generation_result is not None else None
 
     console.print(
         Panel.fit(
@@ -131,6 +130,7 @@ def solve(
                     ),
                     *([llm_tests_message] if llm_tests_message else []),
                     f"Bundled tests: {flow.attempt.bundled_passed}/{flow.attempt.bundled_total}",
+                    f"LLM tests: {flow.attempt.llm_passed}/{flow.attempt.llm_total}",
                     f"Status: {flow.attempt.status}",
                     f"Runtime: {flow.attempt.runtime_ms:.2f} ms",
                     "Using cached results." if flow.used_cache else "Saved a new attempt snapshot.",

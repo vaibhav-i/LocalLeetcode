@@ -44,6 +44,7 @@ def test_solve_smoke() -> None:
     assert "two-sum" in result.stdout
     assert "Requested tests mode: both" in result.stdout
     assert "Effective tests mode: bundled" in result.stdout
+    assert "LLM tests: 0/0" in result.stdout
     assert "Bundled tests: 0/2" in result.stdout
 
 

@@ -3,14 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import sqlite3
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from .db import CacheKey, find_cached_attempt, insert_attempt, mark_problem_auto_solved
 from .execution import ExecutionSummary, execute_solution, hash_text
+from .llm import LLMBackend
 from .problems import ProblemDocument
+from .test_generation import TestGenerationResult, generate_test_generation
+from .types import TestCase
 from .types import AttemptSummary
-
-VALID_TEST_MODES = ("bundled", "llm", "both")
 
 
 class SolveFlowError(RuntimeError):
@@ -85,19 +86,7 @@ class SolveFlowResult:
     attempt_id: int | None
     cached_attempt: CachedAttemptRecord | None = None
     execution: ExecutionSummary | None = None
-
-
-def normalize_test_mode(test_mode: str) -> str:
-    normalized = test_mode.strip().lower()
-    if normalized not in VALID_TEST_MODES:
-        raise SolveFlowError(
-            f"Unsupported test mode {test_mode!r}. Expected one of: {', '.join(VALID_TEST_MODES)}"
-        )
-    return normalized
-
-
-def effective_test_mode(test_mode: str) -> str:
-    return "bundled" if test_mode in {"llm", "both"} else test_mode
+    test_generation_result: TestGenerationResult | None = None
 
 
 def prepare_solution_snapshot(
@@ -127,8 +116,8 @@ def _attempt_from_execution(
         test_mode=test_mode,
         bundled_passed=execution.bundled_passed,
         bundled_total=execution.bundled_total,
-        llm_passed=0,
-        llm_total=0,
+        llm_passed=execution.llm_passed,
+        llm_total=execution.llm_total,
         status=execution.status,
         runtime_ms=execution.runtime_ms,
     )
@@ -141,12 +130,18 @@ def solve_problem(
     solution_path: Path | None = None,
     requested_test_mode: str = "both",
     force: bool = False,
-    executor: Callable[[ProblemDocument, Path | None], ExecutionSummary] = execute_solution,
+    llm: LLMBackend | None = None,
+    executor: Callable[[ProblemDocument, Path | None, Sequence[TestCase] | None], ExecutionSummary] = execute_solution,
     cache_lookup: Callable[[sqlite3.Connection, str, CacheKey], dict[str, Any] | None] = find_cached_attempt,
     save_attempt: Callable[..., int] = insert_attempt,
 ) -> SolveFlowResult:
-    normalized_test_mode = normalize_test_mode(requested_test_mode)
-    current_effective_test_mode = effective_test_mode(normalized_test_mode)
+    test_generation_result = generate_test_generation(
+        problem,
+        requested_test_mode=requested_test_mode,
+        llm=llm,
+    )
+    normalized_test_mode = test_generation_result.requested_test_mode
+    current_effective_test_mode = test_generation_result.effective_test_mode
     solution_snapshot = prepare_solution_snapshot(problem, solution_path)
     cache_key = CacheKey(
         code_hash=solution_snapshot.code_hash,
@@ -171,9 +166,14 @@ def solve_problem(
                 attempt_id=cached_attempt.id,
                 cached_attempt=cached_attempt,
                 execution=None,
+                test_generation_result=test_generation_result,
             )
 
-    execution = executor(problem, solution_snapshot.solution_path)
+    execution = executor(
+        problem,
+        solution_snapshot.solution_path,
+        test_generation_result.combined_test_cases(),
+    )
     attempt = _attempt_from_execution(problem, normalized_test_mode, execution)
     attempt_id = save_attempt(
         conn,
@@ -183,8 +183,8 @@ def solve_problem(
         tests_hash=execution.tests_hash,
         bundled_passed=execution.bundled_passed,
         bundled_total=execution.bundled_total,
-        llm_passed=0,
-        llm_total=0,
+        llm_passed=execution.llm_passed,
+        llm_total=execution.llm_total,
         runtime_ms=execution.runtime_ms,
         status=execution.status,
         code_snapshot=execution.code_snapshot,
@@ -203,4 +203,5 @@ def solve_problem(
         attempt_id=attempt_id,
         cached_attempt=None,
         execution=execution,
+        test_generation_result=test_generation_result,
     )
