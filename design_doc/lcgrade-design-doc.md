@@ -205,7 +205,7 @@ Extensions are discovered by scanning a registry. Users select which to run via 
 | Phase | Scope |
 |-------|-------|
 | **Beta** | All core abstractions (Runner, LLMBackend, Validator, Extension) with Python/Ollama/ExactMatch+SetEquality/InterviewQuestions+OptimizationPrompt implementations. Core eval pipeline end-to-end, Blind 75 problem bank from cojudge, subprocess sandbox. |
-| **v1** | Add MLXBackend + inference benchmarks, eval accuracy benchmarks, empirical complexity profiling (`scaling_inputs` generators + timing framework), additional Runners (Java, C++), additional Validators (FloatTolerance, Custom), Docker sandbox option, community extensions |
+| **v1** | Add MLXBackend + inference benchmarks, eval accuracy benchmarks, empirical complexity profiling (`scaling_inputs` generators + timing framework), additional Runners (Java, C++), additional Validators (FloatTolerance, Custom), Docker sandbox option, community extensions, optional cloud-agent backends via user-provided Claude/OpenAI/Gemini API keys |
 | **Polish** | `lcgrade setup` onboarding wizard, interactive TUI browser (textual), blog posts, README with demo GIF |
 
 ---
@@ -1237,6 +1237,8 @@ The user gets conversational continuity — the LLM knows what was tried and rul
 ### Config File
 
 Located at `~/.lcgrade/config.yaml`:
+
+v1 should also support optional cloud-agent configuration here for users who want to use hosted models instead of only local backends. That includes user-provided API keys and backend selection for providers such as Claude, OpenAI, and Gemini.
 
 ```yaml
 editor: code                # Editor command ($EDITOR override)

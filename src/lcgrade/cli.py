@@ -8,7 +8,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .chat import run_chat_turn, run_hint_turn
-from .config import discover_paths
+from .config import AppConfig, discover_paths, load_app_config
 from .db import (
     bootstrap_database,
     clear_chat_messages,
@@ -22,6 +22,7 @@ from .execution import ExecutionError
 from .llm import MLXBackend, OllamaBackend
 from .preflight import PreflightError
 from .reviews import DEFAULT_STAGE3_EXTENSIONS, review_problem
+from .setup_wizard import inspect_setup, persist_setup_config, pull_ollama_model
 from .solve_flow import SolveFlowError, solve_problem
 
 app = typer.Typer(help="Local-first CLI auto-grader for LeetCode-style problems.")
@@ -34,10 +35,22 @@ def _lazy_imports():
     return index_problem_bank, load_problem_by_slug
 
 
-def _build_backend(name: str):
-    normalized = name.strip().lower()
+def _configured_app_config(paths) -> AppConfig:
+    return load_app_config(paths.config_path)
+
+
+def _resolve_backend_name(paths, requested_name: str | None) -> str:
+    if requested_name is not None:
+        return requested_name.strip().lower()
+    return _configured_app_config(paths).backend.strip().lower()
+
+
+def _build_backend(paths, name: str | None):
+    normalized = _resolve_backend_name(paths, name)
     if normalized == "ollama":
-        return OllamaBackend()
+        config = _configured_app_config(paths)
+        model = config.model if config.model != "auto" else None
+        return OllamaBackend(model=model)
     if normalized == "mlx":
         return MLXBackend()
     raise typer.BadParameter(f"Unsupported backend: {name}")
@@ -112,58 +125,155 @@ def list_problems() -> None:
 
 
 @app.command()
-def setup() -> None:
+def setup(
+    check: bool = typer.Option(False, "--check", help="Report current environment without mutating setup state."),
+) -> None:
     paths = discover_paths()
-    index_problem_bank, _ = _lazy_imports()
-    paths.data_dir.mkdir(parents=True, exist_ok=True)
+    status = inspect_setup(paths, check_only=check)
 
-    db_ready = False
-    indexed_count = 0
-    indexing_error: str | None = None
-    connection = None
-    try:
-        connection = bootstrap_database(paths.db_path)
-        db_ready = True
-        try:
-            report = index_problem_bank(connection, paths.problems_dir)
-            indexed_count = report.scanned
-        except Exception as exc:  # pragma: no cover - defensive status reporting
-            indexing_error = str(exc)
-    finally:
-        if connection is not None:
-            connection.close()
+    if check:
+        lines = [
+            f"Workspace: {paths.workspace_root}",
+            f"Data dir: {paths.data_dir}",
+            f"DB path: {paths.db_path}",
+            f"Config path: {paths.config_path}",
+            f"Problem bank: {paths.problems_dir}",
+            f"Data dir exists: {'yes' if status.data_dir_exists else 'no'}",
+            f"Database ready: {'yes' if status.db_ready else 'no'}",
+            *([f"Database detail: {status.db_error}"] if status.db_error else []),
+            (
+                f"Problem bank readable: yes ({status.indexed_count} problem(s))"
+                if status.indexing_error is None
+                else f"Problem bank readable: no ({status.indexing_error})"
+            ),
+            f"Configured backend: {status.configured_backend}",
+            f"Configured model: {status.configured_model}",
+            f"Resolved model: {status.resolved_model}",
+            f"Detected RAM: {status.ram_gb:.1f} GB",
+            f"Ollama binary: {status.ollama_binary_path or 'not found'}",
+            f"Ollama reachable: {'yes' if status.ollama_reachable else 'no'}",
+            (
+                "Installed Ollama models: " + ", ".join(status.installed_models)
+                if status.installed_models
+                else "Installed Ollama models: none detected"
+            ),
+            *(["Ollama detail: " + status.ollama_detail] if status.ollama_detail else []),
+            "v0 uses repo-local problems/ and .lcgrade/ paths.",
+        ]
+        console.print(Panel.fit("\n".join(lines), title="lcgrade setup --check"))
+        return
 
-    ollama_available = False
-    ollama_error: str | None = None
-    backend = OllamaBackend()
-    installed_models: tuple[str, ...] = ()
-    try:
-        ollama_available = backend.available()
-        installed_models = backend.installed_models()
-        if not ollama_available:
-            ollama_error = backend.unavailable_reason() or "Ollama is not reachable."
-    except Exception as exc:  # pragma: no cover - defensive status reporting
-        ollama_error = str(exc)
+    if status.ollama_binary_path is None:
+        console.print(
+            Panel.fit(
+                "\n".join(
+                    [
+                        "Ollama is not installed.",
+                        "Install Ollama first, then re-run `lcgrade setup`.",
+                        "Expected command after install: `ollama serve`",
+                    ]
+                ),
+                title="lcgrade setup",
+            )
+        )
+        raise typer.Exit(code=1)
+
+    if not status.ollama_reachable:
+        console.print(
+            Panel.fit(
+                "\n".join(
+                    [
+                        "Ollama is installed but not reachable.",
+                        "Run `ollama serve` in another terminal, then re-run `lcgrade setup`.",
+                        *(["Detail: " + status.ollama_detail] if status.ollama_detail else []),
+                    ]
+                ),
+                title="lcgrade setup",
+            )
+        )
+        raise typer.Exit(code=1)
+
+    if not status.model_available:
+        console.print(
+            Panel.fit(
+                "\n".join(
+                    [
+                        f"Recommended model: {status.resolved_model}",
+                        f"Detected RAM: {status.ram_gb:.1f} GB",
+                        "The configured model is not installed yet.",
+                        *(["Detail: " + status.ollama_detail] if status.ollama_detail else []),
+                    ]
+                ),
+                title="lcgrade setup",
+            )
+        )
+        if not typer.confirm(f"Pull `{status.resolved_model}` now?", default=True):
+            console.print(
+                Panel.fit(
+                    f"Setup incomplete. Run `ollama pull {status.resolved_model}` and then `lcgrade setup`.",
+                    title="lcgrade setup",
+                )
+            )
+            raise typer.Exit(code=1)
+
+        console.print(f"Pulling {status.resolved_model} via Ollama...")
+        pulled, pull_error = pull_ollama_model(status.resolved_model)
+        if not pulled:
+            console.print(
+                Panel.fit(
+                    "\n".join(
+                        [
+                            f"Failed to pull {status.resolved_model}.",
+                            "Run this manually and retry setup:",
+                            f"`ollama pull {status.resolved_model}`",
+                            *(["Error: " + pull_error] if pull_error else []),
+                        ]
+                    ),
+                    title="lcgrade setup",
+                )
+            )
+            raise typer.Exit(code=1)
+
+    config = persist_setup_config(paths, backend="ollama", model=status.resolved_model)
+    final_status = inspect_setup(paths, check_only=False)
+    if not final_status.db_ready or final_status.indexing_error is not None or not final_status.model_available:
+        console.print(
+            Panel.fit(
+                "\n".join(
+                    [
+                        "Setup incomplete.",
+                        *(["Database detail: " + final_status.db_error] if final_status.db_error else []),
+                        *(["Indexing detail: " + final_status.indexing_error] if final_status.indexing_error else []),
+                        *(["Ollama detail: " + final_status.ollama_detail] if final_status.ollama_detail else []),
+                    ]
+                ),
+                title="lcgrade setup",
+            )
+        )
+        raise typer.Exit(code=1)
 
     lines = [
         f"Workspace: {paths.workspace_root}",
         f"Data dir: {paths.data_dir}",
         f"DB path: {paths.db_path}",
+        f"Config path: {paths.config_path}",
         f"Problem bank: {paths.problems_dir}",
-        f"Database ready: {'yes' if db_ready else 'no'}",
+        f"Database ready: {'yes' if final_status.db_ready else 'no'}",
+        f"Problem bank indexable: yes ({final_status.indexed_count} problem(s))",
+        f"Configured backend: {config.backend}",
+        f"Ollama model: {config.model}",
+        f"Detected RAM: {final_status.ram_gb:.1f} GB",
+        f"Ollama reachable: {'yes' if final_status.ollama_reachable else 'no'}",
         (
-            f"Problem bank indexable: yes ({indexed_count} problem(s))"
-            if indexing_error is None
-            else f"Problem bank indexable: no ({indexing_error})"
-        ),
-        f"Ollama model: {backend.model}",
-        f"Ollama reachable: {'yes' if ollama_available else 'no'}",
-        (
-            "Installed Ollama models: " + ", ".join(installed_models)
-            if installed_models
+            "Installed Ollama models: " + ", ".join(final_status.installed_models)
+            if final_status.installed_models
             else "Installed Ollama models: none detected"
         ),
-        *(["Ollama detail: " + ollama_error] if ollama_error else []),
+        "Setup complete.",
+        "Next steps:",
+        "1. lcgrade start two-sum",
+        "2. edit the starter file",
+        "3. lcgrade solve",
         "v0 uses repo-local problems/ and .lcgrade/ paths.",
     ]
     console.print(Panel.fit("\n".join(lines), title="lcgrade setup"))
@@ -257,7 +367,7 @@ def solve(
     tests: str = typer.Option("both", "--tests", help="bundled, llm, or both"),
     solution: Path | None = typer.Option(None, "--solution", help="Path to the solution file to evaluate."),
     force: bool = typer.Option(False, "--force", help="Bypass cached attempts and re-run Stage 1."),
-    backend: str = typer.Option("ollama", "--backend", help="LLM backend to use for test generation."),
+    backend: str | None = typer.Option(None, "--backend", help="LLM backend to use for test generation."),
 ) -> None:
     paths = discover_paths()
     index_problem_bank, load_problem = _lazy_imports()
@@ -278,7 +388,7 @@ def solve(
                 solution_path=_resolve_solution_path(paths, solution),
                 requested_test_mode=tests,
                 force=force,
-                llm=_build_backend(backend) if tests in {"llm", "both"} else None,
+                llm=_build_backend(paths, backend) if tests in {"llm", "both"} else None,
             )
         except (ExecutionError, PreflightError, SolveFlowError) as exc:
             console.print(f"[red]{exc}[/red]")
@@ -300,7 +410,7 @@ def solve(
                     f"Function: {flow.problem.metadata.function_name}",
                     f"Requested tests mode: {flow.requested_test_mode}",
                     f"Effective tests mode: {flow.effective_test_mode}",
-                    f"Backend: {backend}",
+                    f"Backend: {_resolve_backend_name(paths, backend)}",
                     (
                         f"Code unchanged since last attempt. "
                         f"Showing cached results."
@@ -323,7 +433,7 @@ def solve(
 @app.command()
 def review(
     slug: str | None = typer.Argument(None, help="Problem slug to review."),
-    backend: str = typer.Option("ollama", "--backend", help="LLM backend to use for Stage 2/3."),
+    backend: str | None = typer.Option(None, "--backend", help="LLM backend to use for Stage 2/3."),
     extend: str = typer.Option(
         ",".join(DEFAULT_STAGE3_EXTENSIONS),
         "--extend",
@@ -345,7 +455,7 @@ def review(
         result = review_problem(
             connection,
             slug,
-            llm=_build_backend(backend),
+            llm=_build_backend(paths, backend),
             extension_names=extension_names,
         )
     finally:
@@ -373,7 +483,7 @@ def review(
         Panel.fit(
             "\n".join(
                 [
-                    f"Backend: {backend}",
+                    f"Backend: {_resolve_backend_name(paths, backend)}",
                     "",
                     result.review_text,
                     "",
@@ -403,7 +513,7 @@ def chat(
         result = run_chat_turn(
             connection,
             message=message,
-            llm=_build_backend("ollama"),
+            llm=_build_backend(paths, None),
         )
     finally:
         connection.close()
@@ -430,7 +540,7 @@ def hint(
             connection,
             tier=tier,
             message=message,
-            llm=_build_backend("ollama"),
+            llm=_build_backend(paths, None),
         )
     finally:
         connection.close()

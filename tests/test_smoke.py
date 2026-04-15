@@ -28,6 +28,7 @@ def isolated_app_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
             problems_dir=project_root / "problems",
             data_dir=data_dir,
             db_path=data_dir / "lcgrade.db",
+            config_path=data_dir / "config.yaml",
         ),
     )
 

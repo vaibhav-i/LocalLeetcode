@@ -7,7 +7,7 @@ from typer.testing import CliRunner
 
 import lcgrade.cli as cli_module
 from lcgrade.cli import app
-from lcgrade.config import AppPaths
+from lcgrade.config import AppConfig, AppPaths, load_app_config, save_app_config
 from lcgrade.db import (
     bootstrap_database,
     fetch_problem_record,
@@ -37,6 +37,7 @@ def isolated_app_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AppPa
         problems_dir=project_root / "problems",
         data_dir=data_dir,
         db_path=data_dir / "lcgrade.db",
+        config_path=data_dir / "config.yaml",
     )
     monkeypatch.setattr(cli_module, "discover_paths", lambda: paths)
     return paths
@@ -65,6 +66,7 @@ def test_setup_reports_paths_and_unavailable_backend(
 ) -> None:
     class UnavailableBackend:
         model = "llama3.2"
+        base_url = "http://localhost:11434"
 
         def available(self) -> bool:
             return False
@@ -75,18 +77,129 @@ def test_setup_reports_paths_and_unavailable_backend(
         def unavailable_reason(self) -> str:
             return "Ollama is not reachable."
 
-    monkeypatch.setattr(cli_module, "OllamaBackend", lambda: UnavailableBackend())
+    monkeypatch.setattr("lcgrade.setup_wizard.OllamaBackend", lambda model=None: UnavailableBackend())
 
-    result = runner.invoke(app, ["setup"])
+    result = runner.invoke(app, ["setup", "--check"])
 
     assert result.exit_code == 0
     assert str(isolated_app_paths.workspace_root) in result.stdout
     assert ".lcgrade/lcgrade.db" in result.stdout
-    assert "Problem bank indexable: yes" in result.stdout
-    assert "Ollama model: llama3.2" in result.stdout
-    assert "Ollama reachable: no" in result.stdout
+    assert "Problem bank readable: yes" in result.stdout
+    assert "Resolved model: qwen2.5-coder:7b" in result.stdout
+    assert "Ollama reachable: yes" in result.stdout
     assert "Installed Ollama models: none detected" in result.stdout
     assert "repo-local problems/" in result.stdout
+
+
+def test_setup_check_does_not_create_data_dir(isolated_app_paths: AppPaths) -> None:
+    result = runner.invoke(app, ["setup", "--check"])
+
+    assert result.exit_code == 0
+    assert isolated_app_paths.data_dir.exists() is False
+
+
+def test_setup_reports_missing_ollama_binary(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_app_paths: AppPaths,
+) -> None:
+    monkeypatch.setattr("lcgrade.setup_wizard.detect_ollama_binary", lambda: None)
+
+    result = runner.invoke(app, ["setup"])
+
+    assert result.exit_code == 1
+    assert "Ollama is not installed." in result.stdout
+
+
+def test_setup_reports_ollama_serve_guidance(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_app_paths: AppPaths,
+) -> None:
+    monkeypatch.setattr("lcgrade.setup_wizard.detect_ollama_binary", lambda: "/usr/local/bin/ollama")
+
+    class OfflineBackend:
+        def __init__(self, model: str | None = None):
+            self.model = model or "qwen2.5-coder:7b"
+            self.base_url = "http://localhost:11434"
+
+        def installed_models(self) -> tuple[str, ...]:
+            raise RuntimeError("daemon down")
+
+    monkeypatch.setattr("lcgrade.setup_wizard.OllamaBackend", OfflineBackend)
+
+    result = runner.invoke(app, ["setup"])
+
+    assert result.exit_code == 1
+    assert "Run `ollama serve`" in result.stdout
+
+
+def test_setup_pulls_missing_model_and_persists_config(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_app_paths: AppPaths,
+) -> None:
+    state = {"installed": False}
+    monkeypatch.setattr("lcgrade.setup_wizard.detect_total_ram_gb", lambda: 16.0)
+    monkeypatch.setattr("lcgrade.setup_wizard.detect_ollama_binary", lambda: "/usr/local/bin/ollama")
+
+    class FakeBackend:
+        def __init__(self, model: str | None = None):
+            self.model = model or "qwen2.5-coder:7b"
+            self.base_url = "http://localhost:11434"
+
+        def installed_models(self) -> tuple[str, ...]:
+            return (self.model,) if state["installed"] else ()
+
+        def model_installed(self) -> bool:
+            return state["installed"]
+
+        def unavailable_reason(self) -> str:
+            return f"Ollama is running, but model {self.model!r} is not installed."
+
+    monkeypatch.setattr("lcgrade.setup_wizard.OllamaBackend", FakeBackend)
+    monkeypatch.setattr(cli_module.typer, "confirm", lambda message, default=True: True)
+
+    def fake_pull(model: str) -> tuple[bool, str | None]:
+        state["installed"] = True
+        return True, None
+
+    monkeypatch.setattr(cli_module, "pull_ollama_model", fake_pull)
+
+    result = runner.invoke(app, ["setup"])
+
+    assert result.exit_code == 0
+    assert "Setup complete." in result.stdout
+    assert "qwen2.5-coder:7b" in result.stdout
+    config = load_app_config(isolated_app_paths.config_path)
+    assert config == AppConfig(backend="ollama", model="qwen2.5-coder:7b")
+
+
+def test_setup_uses_configured_model_for_solve(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_app_paths: AppPaths,
+) -> None:
+    conn = bootstrap_database(isolated_app_paths.db_path)
+    index_problem_bank(conn, isolated_app_paths.problems_dir)
+    cli_module.set_active_slug(conn, "two-sum")
+    conn.close()
+    save_app_config(isolated_app_paths.config_path, AppConfig(backend="ollama", model="custom-model"))
+
+    captured: dict[str, str] = {}
+
+    class FakeBackend:
+        def __init__(self, model: str | None = None):
+            captured["model"] = model or ""
+
+        def available(self) -> bool:
+            return False
+
+        def unavailable_reason(self) -> str:
+            return "LLM backend unavailable."
+
+    monkeypatch.setattr(cli_module, "OllamaBackend", FakeBackend)
+
+    result = runner.invoke(app, ["solve", "--tests", "llm", "--solution", "problems/two-sum/solutions/reference.py"])
+
+    assert result.exit_code == 0
+    assert captured["model"] == "custom-model"
 
 
 def test_start_sets_active_slug(isolated_app_paths: AppPaths) -> None:
@@ -192,7 +305,7 @@ def test_prune_keeps_newest_ten_attempts_and_cascades_reviews(
 
 
 def test_chat_requires_active_problem(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli_module, "_build_backend", lambda name: MockBackend(default_response="unused"))
+    monkeypatch.setattr(cli_module, "_build_backend", lambda paths, name: MockBackend(default_response="unused"))
 
     result = runner.invoke(app, ["chat", "How should I think about this?"])
 
@@ -219,7 +332,7 @@ def test_chat_persists_messages_and_includes_attempt_review_context(
     isolated_app_paths: AppPaths,
 ) -> None:
     backend = MockBackend(default_response="Focus on using a hash map.")
-    monkeypatch.setattr(cli_module, "_build_backend", lambda name: backend)
+    monkeypatch.setattr(cli_module, "_build_backend", lambda paths, name: backend)
 
     conn = bootstrap_database(isolated_app_paths.db_path)
     index_problem_bank(conn, isolated_app_paths.problems_dir)
@@ -262,7 +375,7 @@ def test_chat_reports_unavailable_backend(
         def model_info(self) -> ModelInfo:
             return ModelInfo(name="unavailable", context_window=0, quantization="unknown", backend="mock")
 
-    monkeypatch.setattr(cli_module, "_build_backend", lambda name: UnavailableBackend())
+    monkeypatch.setattr(cli_module, "_build_backend", lambda paths, name: UnavailableBackend())
     conn = bootstrap_database(isolated_app_paths.db_path)
     index_problem_bank(conn, isolated_app_paths.problems_dir)
     cli_module.set_active_slug(conn, "two-sum")
@@ -308,7 +421,7 @@ def test_review_uses_active_problem_when_slug_is_omitted(
             "Optimization note.",
         ]
     )
-    monkeypatch.setattr(cli_module, "_build_backend", lambda name: backend)
+    monkeypatch.setattr(cli_module, "_build_backend", lambda paths, name: backend)
     conn = bootstrap_database(isolated_app_paths.db_path)
     index_problem_bank(conn, isolated_app_paths.problems_dir)
     cli_module.set_active_slug(conn, "two-sum")
@@ -327,7 +440,7 @@ def test_hint_enforces_tier_and_persists_hint_tier(
     isolated_app_paths: AppPaths,
 ) -> None:
     backend = MockBackend(default_response="Try storing seen values in a set.")
-    monkeypatch.setattr(cli_module, "_build_backend", lambda name: backend)
+    monkeypatch.setattr(cli_module, "_build_backend", lambda paths, name: backend)
     conn = bootstrap_database(isolated_app_paths.db_path)
     index_problem_bank(conn, isolated_app_paths.problems_dir)
     cli_module.set_active_slug(conn, "contains-duplicate")
