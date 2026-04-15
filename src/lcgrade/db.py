@@ -1,0 +1,293 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+import json
+import sqlite3
+from typing import Any, Iterable, Mapping
+
+SCHEMA_VERSION = 1
+
+_SCHEMA_V1 = """
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS problems (
+    slug TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    difficulty TEXT NOT NULL,
+    tags TEXT NOT NULL DEFAULT '[]',
+    category TEXT NOT NULL DEFAULT '',
+    function_name TEXT NOT NULL,
+    params TEXT NOT NULL DEFAULT '[]',
+    return_type TEXT NOT NULL DEFAULT '',
+    validator TEXT NOT NULL DEFAULT 'exact_match',
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    file_path TEXT NOT NULL,
+    statement_hash TEXT NOT NULL DEFAULT '',
+    statement_mtime REAL NOT NULL DEFAULT 0,
+    tests_hash TEXT,
+    tests_mtime REAL,
+    scaling_inputs TEXT,
+    auto_solved INTEGER NOT NULL DEFAULT 0,
+    auto_solved_at TEXT,
+    manual_solved INTEGER NOT NULL DEFAULT 0,
+    manual_solved_at TEXT,
+    review_generated INTEGER NOT NULL DEFAULT 0,
+    review_generated_at TEXT,
+    review_acknowledged INTEGER NOT NULL DEFAULT 0,
+    review_acknowledged_at TEXT,
+    followup_completed INTEGER NOT NULL DEFAULT 0,
+    followup_completed_at TEXT,
+    CHECK (auto_solved IN (0, 1)),
+    CHECK (manual_solved IN (0, 1)),
+    CHECK (review_generated IN (0, 1)),
+    CHECK (review_acknowledged IN (0, 1)),
+    CHECK (followup_completed IN (0, 1))
+);
+
+CREATE TABLE IF NOT EXISTS attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    test_mode TEXT NOT NULL,
+    code_hash TEXT NOT NULL,
+    tests_hash TEXT NOT NULL,
+    bundled_passed INTEGER NOT NULL DEFAULT 0,
+    bundled_total INTEGER NOT NULL DEFAULT 0,
+    llm_passed INTEGER NOT NULL DEFAULT 0,
+    llm_total INTEGER NOT NULL DEFAULT 0,
+    runtime_ms REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,
+    code_snapshot TEXT NOT NULL,
+    FOREIGN KEY (slug) REFERENCES problems(slug) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_attempts_cache_key
+    ON attempts(slug, code_hash, test_mode, tests_hash, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_attempts_slug_timestamp
+    ON attempts(slug, timestamp DESC);
+
+CREATE TABLE IF NOT EXISTS reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    attempt_id INTEGER UNIQUE,
+    timestamp TEXT NOT NULL,
+    complexity_time TEXT NOT NULL DEFAULT '',
+    complexity_space TEXT NOT NULL DEFAULT '',
+    review_text TEXT NOT NULL,
+    FOREIGN KEY (attempt_id) REFERENCES attempts(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_reviews_attempt_id
+    ON reviews(attempt_id);
+
+CREATE TABLE IF NOT EXISTS extension_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    review_id INTEGER NOT NULL,
+    extension_name TEXT NOT NULL,
+    output_text TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_extension_results_review_id
+    ON extension_results(review_id);
+
+CREATE INDEX IF NOT EXISTS idx_extension_results_name
+    ON extension_results(extension_name);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    message TEXT NOT NULL,
+    hint_tier INTEGER,
+    timestamp TEXT NOT NULL,
+    FOREIGN KEY (slug) REFERENCES problems(slug) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session
+    ON chat_messages(slug, session_id, timestamp);
+"""
+
+MIGRATIONS: dict[int, str] = {
+    1: _SCHEMA_V1,
+}
+
+
+@dataclass(slots=True, frozen=True)
+class CacheKey:
+    code_hash: str
+    test_mode: str
+    tests_hash: str
+
+
+def configure_connection(conn: sqlite3.Connection) -> sqlite3.Connection:
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    return conn
+
+
+def open_database(path: str | Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(path))
+    return configure_connection(conn)
+
+
+def get_metadata_value(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:
+    try:
+        row = conn.execute("SELECT value FROM metadata WHERE key = ?", (key,)).fetchone()
+    except sqlite3.OperationalError:
+        return default
+    if row is None:
+        return default
+    return str(row["value"])
+
+
+def set_metadata_value(conn: sqlite3.Connection, key: str, value: str | None) -> None:
+    if value is None:
+        conn.execute("DELETE FROM metadata WHERE key = ?", (key,))
+        return
+    conn.execute(
+        """
+        INSERT INTO metadata(key, value)
+        VALUES(?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (key, value),
+    )
+
+
+def get_db_version(conn: sqlite3.Connection) -> int:
+    value = get_metadata_value(conn, "db_version", "0")
+    return int(value or 0)
+
+
+def set_db_version(conn: sqlite3.Connection, version: int) -> None:
+    set_metadata_value(conn, "db_version", str(version))
+
+
+def get_active_slug(conn: sqlite3.Connection) -> str | None:
+    return get_metadata_value(conn, "active_slug")
+
+
+def set_active_slug(conn: sqlite3.Connection, slug: str | None) -> None:
+    set_metadata_value(conn, "active_slug", slug)
+
+
+def clear_active_slug(conn: sqlite3.Connection) -> None:
+    set_active_slug(conn, None)
+
+
+def migrate(conn: sqlite3.Connection, target_version: int = SCHEMA_VERSION) -> None:
+    current_version = get_db_version(conn)
+    if current_version > target_version:
+        raise RuntimeError(
+            f"Database version {current_version} is newer than supported version {target_version}"
+        )
+
+    for version in range(current_version + 1, target_version + 1):
+        script = MIGRATIONS.get(version)
+        if script is None:
+            raise RuntimeError(f"No migration script registered for schema version {version}")
+        with conn:
+            conn.executescript(script)
+            set_db_version(conn, version)
+
+
+def bootstrap_database(path: str | Path, target_version: int = SCHEMA_VERSION) -> sqlite3.Connection:
+    conn = open_database(path)
+    migrate(conn, target_version=target_version)
+    return conn
+
+
+def ensure_metadata_table(conn: sqlite3.Connection) -> None:
+    with conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            """
+        )
+
+
+def json_dumps(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def fetch_problem_record(conn: sqlite3.Connection, slug: str) -> dict[str, Any] | None:
+    row = conn.execute("SELECT * FROM problems WHERE slug = ?", (slug,)).fetchone()
+    if row is None:
+        return None
+    return dict(row)
+
+
+def list_problem_records(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute("SELECT * FROM problems ORDER BY slug").fetchall()
+    return [dict(row) for row in rows]
+
+
+def upsert_problem_record(conn: sqlite3.Connection, record: Mapping[str, Any]) -> None:
+    columns = (
+        "slug",
+        "title",
+        "difficulty",
+        "tags",
+        "category",
+        "function_name",
+        "params",
+        "return_type",
+        "validator",
+        "schema_version",
+        "file_path",
+        "statement_hash",
+        "statement_mtime",
+        "tests_hash",
+        "tests_mtime",
+        "scaling_inputs",
+    )
+    values = tuple(record.get(column) for column in columns)
+    with conn:
+        conn.execute(
+            f"""
+            INSERT INTO problems ({", ".join(columns)})
+            VALUES ({", ".join(["?"] * len(columns))})
+            ON CONFLICT(slug) DO UPDATE SET
+                title = excluded.title,
+                difficulty = excluded.difficulty,
+                tags = excluded.tags,
+                category = excluded.category,
+                function_name = excluded.function_name,
+                params = excluded.params,
+                return_type = excluded.return_type,
+                validator = excluded.validator,
+                schema_version = excluded.schema_version,
+                file_path = excluded.file_path,
+                statement_hash = excluded.statement_hash,
+                statement_mtime = excluded.statement_mtime,
+                tests_hash = excluded.tests_hash,
+                tests_mtime = excluded.tests_mtime,
+                scaling_inputs = excluded.scaling_inputs
+            """,
+            values,
+        )
+
+
+def delete_problem_records(conn: sqlite3.Connection, slugs: Iterable[str]) -> int:
+    slug_list = list(slugs)
+    if not slug_list:
+        return 0
+    with conn:
+        placeholders = ", ".join(["?"] * len(slug_list))
+        cursor = conn.execute(f"DELETE FROM problems WHERE slug IN ({placeholders})", slug_list)
+    return cursor.rowcount
