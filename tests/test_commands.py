@@ -88,6 +88,7 @@ def test_setup_reports_paths_and_unavailable_backend(
     assert "Resolved model: qwen2.5-coder:7b" in result.stdout
     assert "Ollama reachable: yes" in result.stdout
     assert "Installed Ollama models: none detected" in result.stdout
+    assert "ollama pull qwen2.5-coder:7b" in result.stdout
     assert "repo-local problems/" in result.stdout
 
 
@@ -159,6 +160,8 @@ def test_setup_pulls_missing_model_and_persists_config(
             return f"Ollama is running, but model {self.model!r} is not installed."
 
     monkeypatch.setattr("lcgrade.setup_wizard.OllamaBackend", FakeBackend)
+    monkeypatch.setattr(cli_module, "OllamaBackend", FakeBackend)
+    monkeypatch.setattr(cli_module.typer, "prompt", lambda message, default="", show_default=True: "1")
     monkeypatch.setattr(cli_module.typer, "confirm", lambda message, default=True: True)
 
     def fake_pull(model: str) -> tuple[bool, str | None]:
@@ -174,6 +177,48 @@ def test_setup_pulls_missing_model_and_persists_config(
     assert "qwen2.5-coder:7b" in result.stdout
     config = load_app_config(isolated_app_paths.config_path)
     assert config == AppConfig(backend="ollama", model="qwen2.5-coder:7b")
+
+
+def test_setup_can_select_already_installed_model_without_pull(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_app_paths: AppPaths,
+) -> None:
+    monkeypatch.setattr("lcgrade.setup_wizard.detect_total_ram_gb", lambda: 16.0)
+    monkeypatch.setattr("lcgrade.setup_wizard.detect_ollama_binary", lambda: "/usr/local/bin/ollama")
+
+    class FakeBackend:
+        def __init__(self, model: str | None = None):
+            self.model = model or "qwen2.5-coder:7b"
+            self.base_url = "http://localhost:11434"
+
+        def installed_models(self) -> tuple[str, ...]:
+            return ("llama3.2:3b",)
+
+        def model_installed(self) -> bool:
+            return self.model == "llama3.2:3b"
+
+        def unavailable_reason(self) -> str:
+            return f"Ollama is running, but model {self.model!r} is not installed."
+
+    monkeypatch.setattr("lcgrade.setup_wizard.OllamaBackend", FakeBackend)
+    monkeypatch.setattr(cli_module, "OllamaBackend", FakeBackend)
+    monkeypatch.setattr(cli_module.typer, "prompt", lambda message, default="", show_default=True: "1")
+
+    pulled: list[str] = []
+
+    def fake_pull(model: str) -> tuple[bool, str | None]:
+        pulled.append(model)
+        return True, None
+
+    monkeypatch.setattr(cli_module, "pull_ollama_model", fake_pull)
+
+    result = runner.invoke(app, ["setup"])
+
+    assert result.exit_code == 0
+    assert "llama3.2:3b" in result.stdout
+    assert pulled == []
+    config = load_app_config(isolated_app_paths.config_path)
+    assert config == AppConfig(backend="ollama", model="llama3.2:3b")
 
 
 def test_setup_check_prints_remediation_commands(

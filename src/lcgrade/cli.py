@@ -8,7 +8,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .chat import run_chat_turn, run_hint_turn
-from .config import AppConfig, discover_paths, load_app_config
+from .config import AppConfig, discover_paths, load_app_config, recommended_ollama_models
 from .db import (
     bootstrap_database,
     clear_chat_messages,
@@ -75,6 +75,74 @@ def _resolve_target_slug(
         console.print(Panel.fit(require_active_message, title="lcgrade"))
         raise typer.Exit(code=1)
     return active_slug
+
+
+def _setup_model_choices(status) -> list[dict[str, str]]:
+    choices: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    for model in status.installed_models:
+        normalized = str(model).strip()
+        if not normalized or normalized in seen:
+            continue
+        choices.append(
+            {
+                "name": normalized,
+                "source": "installed",
+                "summary": "Already available locally.",
+            }
+        )
+        seen.add(normalized)
+
+    for option in recommended_ollama_models(status.ram_gb):
+        if option.name in seen:
+            continue
+        choices.append(
+            {
+                "name": option.name,
+                "source": "recommended",
+                "summary": option.summary,
+            }
+        )
+        seen.add(option.name)
+
+    if status.resolved_model not in seen:
+        choices.insert(
+            0,
+            {
+                "name": status.resolved_model,
+                "source": "configured",
+                "summary": "Current lcgrade-configured model.",
+            },
+        )
+    return choices
+
+
+def _select_setup_model(status) -> str:
+    choices = _setup_model_choices(status)
+    table = Table(title="Ollama Model Choices")
+    table.add_column("#")
+    table.add_column("Model")
+    table.add_column("Source")
+    table.add_column("Notes")
+
+    default_index = 1
+    for index, choice in enumerate(choices, start=1):
+        if choice["name"] == status.resolved_model:
+            default_index = index
+        table.add_row(str(index), choice["name"], choice["source"], choice["summary"])
+    console.print(table)
+
+    selected_index = typer.prompt(
+        "Select an Ollama model by number",
+        default=str(default_index),
+        show_default=True,
+    )
+    try:
+        selected_choice = choices[int(selected_index) - 1]
+    except (ValueError, IndexError):
+        raise typer.BadParameter("Invalid model selection.")
+    return selected_choice["name"]
 
 
 @app.command()
@@ -204,29 +272,51 @@ def setup(
         )
         raise typer.Exit(code=1)
 
-    if not status.model_available:
+    selected_model = _select_setup_model(status)
+    model_backend = OllamaBackend(model=selected_model)
+    selected_model_installed = False
+    try:
+        selected_model_installed = model_backend.model_installed()
+    except Exception as exc:
         console.print(
             Panel.fit(
                 "\n".join(
                     [
-                        f"Recommended model: {status.resolved_model}",
-                        f"Detected RAM: {status.ram_gb:.1f} GB",
-                        "The configured model is not installed yet.",
-                        "Recommended command:",
-                        f"`ollama pull {status.resolved_model}`",
-                        *(["Detail: " + status.ollama_detail] if status.ollama_detail else []),
+                        f"Could not verify selected model `{selected_model}`.",
+                        "Run these commands, then re-run setup:",
+                        "`ollama serve`",
+                        f"`ollama pull {selected_model}`",
+                        "`python3 -m lcgrade.cli setup`",
+                        f"Detail: {exc}",
                     ]
                 ),
                 title="lcgrade setup",
             )
         )
-        if not typer.confirm(f"Pull `{status.resolved_model}` now?", default=True):
+        raise typer.Exit(code=1)
+
+    if not selected_model_installed:
+        console.print(
+            Panel.fit(
+                "\n".join(
+                    [
+                        f"Selected model: {selected_model}",
+                        f"Detected RAM: {status.ram_gb:.1f} GB",
+                        "The selected model is not installed yet.",
+                        "Recommended command:",
+                        f"`ollama pull {selected_model}`",
+                    ]
+                ),
+                title="lcgrade setup",
+            )
+        )
+        if not typer.confirm(f"Pull `{selected_model}` now?", default=True):
             console.print(
                 Panel.fit(
                     "\n".join(
                         [
                             "Setup incomplete. Run these commands:",
-                            f"`ollama pull {status.resolved_model}`",
+                            f"`ollama pull {selected_model}`",
                             "`python3 -m lcgrade.cli setup`",
                         ]
                     ),
@@ -235,16 +325,16 @@ def setup(
             )
             raise typer.Exit(code=1)
 
-        console.print(f"Pulling {status.resolved_model} via Ollama...")
-        pulled, pull_error = pull_ollama_model(status.resolved_model)
+        console.print(f"Pulling {selected_model} via Ollama...")
+        pulled, pull_error = pull_ollama_model(selected_model)
         if not pulled:
             console.print(
                 Panel.fit(
                     "\n".join(
                         [
-                            f"Failed to pull {status.resolved_model}.",
+                            f"Failed to pull {selected_model}.",
                             "Run this manually and retry setup:",
-                            f"`ollama pull {status.resolved_model}`",
+                            f"`ollama pull {selected_model}`",
                             "`python3 -m lcgrade.cli setup`",
                             *(["Error: " + pull_error] if pull_error else []),
                         ]
@@ -254,7 +344,7 @@ def setup(
             )
             raise typer.Exit(code=1)
 
-    config = persist_setup_config(paths, backend="ollama", model=status.resolved_model)
+    config = persist_setup_config(paths, backend="ollama", model=selected_model)
     final_status = inspect_setup(paths, check_only=False)
     if not final_status.db_ready or final_status.indexing_error is not None or not final_status.model_available:
         console.print(

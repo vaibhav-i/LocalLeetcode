@@ -28,6 +28,36 @@ class AppConfig:
     model: str = "auto"
 
 
+@dataclass(frozen=True)
+class OllamaModelOption:
+    name: str
+    min_ram_gb: float
+    recommended: bool
+    summary: str
+
+
+OLLAMA_MODEL_CATALOG = (
+    OllamaModelOption(
+        name="qwen2.5-coder:7b",
+        min_ram_gb=12.0,
+        recommended=True,
+        summary="Best v0 default for coding on a 16 GB machine.",
+    ),
+    OllamaModelOption(
+        name="llama3.2:3b",
+        min_ram_gb=6.0,
+        recommended=False,
+        summary="Lighter fallback when memory is tighter or faster responses matter.",
+    ),
+    OllamaModelOption(
+        name="deepseek-r1:14b",
+        min_ram_gb=24.0,
+        recommended=False,
+        summary="Heavier reasoning model for larger-memory systems; not the v0 default.",
+    ),
+)
+
+
 def discover_paths() -> AppPaths:
     package_root = Path(__file__).resolve().parent
     project_root = package_root.parent.parent
@@ -94,8 +124,28 @@ def detect_total_ram_gb() -> float:
 
 
 def get_default_model(ram_gb: float | None = None) -> str:
-    del ram_gb
+    if ram_gb is not None and ram_gb < 12.0:
+        return "llama3.2:3b"
     return DEFAULT_MODEL
+
+
+def recommended_ollama_models(ram_gb: float) -> tuple[OllamaModelOption, ...]:
+    options: list[OllamaModelOption] = []
+    for option in OLLAMA_MODEL_CATALOG:
+        if ram_gb >= option.min_ram_gb:
+            options.append(option)
+
+    if not options:
+        return (OLLAMA_MODEL_CATALOG[1],)
+
+    options.sort(
+        key=lambda option: (
+            0 if option.name == get_default_model(ram_gb=ram_gb) else 1,
+            0 if option.recommended else 1,
+            option.min_ram_gb,
+        )
+    )
+    return tuple(options)
 
 
 def resolve_model_name(config: AppConfig, *, ram_gb: float | None = None) -> str:
