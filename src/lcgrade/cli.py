@@ -11,6 +11,7 @@ from .chat import run_chat_turn, run_hint_turn
 from .config import discover_paths
 from .db import (
     bootstrap_database,
+    clear_chat_messages,
     clear_active_slug,
     get_active_slug,
     prune_attempt_history,
@@ -46,6 +47,21 @@ def _resolve_solution_path(paths, solution: Path | None) -> Path | None:
     if solution is None or solution.is_absolute():
         return solution
     return (paths.workspace_root / solution).resolve()
+
+
+def _resolve_target_slug(
+    connection,
+    slug: str | None,
+    *,
+    require_active_message: str = "No active problem. Run `lcgrade start <slug>` first.",
+) -> str:
+    if slug is not None:
+        return slug
+    active_slug = get_active_slug(connection)
+    if active_slug is None:
+        console.print(Panel.fit(require_active_message, title="lcgrade"))
+        raise typer.Exit(code=1)
+    return active_slug
 
 
 @app.command()
@@ -176,13 +192,14 @@ def start(slug: str = typer.Argument(..., help="Problem slug to make active.")) 
 
 
 @app.command()
-def reset(slug: str = typer.Argument(..., help="Problem slug whose local state should be cleared.")) -> None:
+def reset(slug: str | None = typer.Argument(None, help="Problem slug whose local state should be cleared.")) -> None:
     paths = discover_paths()
     index_problem_bank, load_problem = _lazy_imports()
     paths.data_dir.mkdir(parents=True, exist_ok=True)
     connection = bootstrap_database(paths.db_path)
     try:
         index_problem_bank(connection, paths.problems_dir)
+        slug = _resolve_target_slug(connection, slug)
         problem = load_problem(connection, slug)
         if problem is None:
             raise typer.BadParameter(f"Unknown problem slug: {slug}")
@@ -228,7 +245,7 @@ def prune() -> None:
 
 @app.command()
 def solve(
-    slug: str = typer.Argument(..., help="Problem slug to evaluate."),
+    slug: str | None = typer.Argument(None, help="Problem slug to evaluate."),
     tests: str = typer.Option("both", "--tests", help="bundled, llm, or both"),
     solution: Path | None = typer.Option(None, "--solution", help="Path to the solution file to evaluate."),
     force: bool = typer.Option(False, "--force", help="Bypass cached attempts and re-run Stage 1."),
@@ -241,6 +258,7 @@ def solve(
     connection = bootstrap_database(paths.db_path)
     try:
         index_problem_bank(connection, paths.problems_dir)
+        slug = _resolve_target_slug(connection, slug)
         problem = load_problem(connection, slug)
         if problem is None:
             raise typer.BadParameter(f"Unknown problem slug: {slug}")
@@ -257,6 +275,10 @@ def solve(
         except (ExecutionError, PreflightError, SolveFlowError) as exc:
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(code=1) from exc
+        if flow.attempt.bundled_total > 0 and flow.attempt.bundled_passed == flow.attempt.bundled_total:
+            clear_chat_messages(connection, problem.slug)
+            if get_active_slug(connection) == problem.slug:
+                clear_active_slug(connection)
     finally:
         connection.close()
 
@@ -292,7 +314,7 @@ def solve(
 
 @app.command()
 def review(
-    slug: str = typer.Argument(..., help="Problem slug to review."),
+    slug: str | None = typer.Argument(None, help="Problem slug to review."),
     backend: str = typer.Option("ollama", "--backend", help="LLM backend to use for Stage 2/3."),
     extend: str = typer.Option(
         ",".join(DEFAULT_STAGE3_EXTENSIONS),
@@ -306,6 +328,7 @@ def review(
     connection = bootstrap_database(paths.db_path)
     try:
         index_problem_bank(connection, paths.problems_dir)
+        slug = _resolve_target_slug(connection, slug)
         extension_names = tuple(
             item.strip()
             for item in extend.split(",")

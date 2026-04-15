@@ -135,6 +135,19 @@ def test_reset_clears_problem_state_and_active_slug(isolated_app_paths: AppPaths
         conn.close()
 
 
+def test_reset_uses_active_problem_when_slug_is_omitted(isolated_app_paths: AppPaths) -> None:
+    conn = bootstrap_database(isolated_app_paths.db_path)
+    index_problem_bank(conn, isolated_app_paths.problems_dir)
+    cli_module.set_active_slug(conn, "two-sum")
+    _seed_attempt(conn, slug="two-sum", code_snapshot="def two_sum(nums, target):\n    return [0, 1]\n")
+    conn.close()
+
+    result = runner.invoke(app, ["reset"])
+
+    assert result.exit_code == 0
+    assert "Reset local state for two-sum." in result.stdout
+
+
 def test_prune_keeps_newest_ten_attempts_and_cascades_reviews(
     isolated_app_paths: AppPaths,
 ) -> None:
@@ -172,6 +185,20 @@ def test_chat_requires_active_problem(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli_module, "_build_backend", lambda name: MockBackend(default_response="unused"))
 
     result = runner.invoke(app, ["chat", "How should I think about this?"])
+
+    assert result.exit_code == 1
+    assert "Run `lcgrade start <slug>` first" in result.stdout
+
+
+def test_solve_requires_active_problem_when_slug_is_omitted() -> None:
+    result = runner.invoke(app, ["solve"])
+
+    assert result.exit_code == 1
+    assert "Run `lcgrade start <slug>` first" in result.stdout
+
+
+def test_review_requires_active_problem_when_slug_is_omitted() -> None:
+    result = runner.invoke(app, ["review"])
 
     assert result.exit_code == 1
     assert "Run `lcgrade start <slug>` first" in result.stdout
@@ -235,6 +262,54 @@ def test_chat_reports_unavailable_backend(
 
     assert result.exit_code == 1
     assert "LLM backend unavailable." in result.stdout
+
+
+def test_solve_uses_active_problem_and_clears_active_slug_and_chat_on_success(
+    isolated_app_paths: AppPaths,
+) -> None:
+    conn = bootstrap_database(isolated_app_paths.db_path)
+    index_problem_bank(conn, isolated_app_paths.problems_dir)
+    cli_module.set_active_slug(conn, "two-sum")
+    insert_chat_message(conn, slug="two-sum", session_id="default", role="user", message="keep?")
+    conn.close()
+
+    result = runner.invoke(app, ["solve", "--solution", "problems/two-sum/solutions/reference.py"])
+
+    assert result.exit_code == 0
+    assert "Problem: Two Sum (two-sum)" in result.stdout
+    assert "Bundled tests: 2/2" in result.stdout
+
+    conn = open_database(isolated_app_paths.db_path)
+    try:
+        assert get_active_slug(conn) is None
+        assert conn.execute("SELECT COUNT(*) AS count FROM chat_messages WHERE slug = 'two-sum'").fetchone()["count"] == 0
+    finally:
+        conn.close()
+
+
+def test_review_uses_active_problem_when_slug_is_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_app_paths: AppPaths,
+) -> None:
+    backend = MockBackend(
+        responses=[
+            "## Complexity\nO(n)\n\n## Correctness\nLooks good.\n\n## Code Quality\nClear.\n\n## Edge Cases\nHandled.\n\n## Verdict\nPass.",
+            "Interview follow-up.",
+            "Optimization note.",
+        ]
+    )
+    monkeypatch.setattr(cli_module, "_build_backend", lambda name: backend)
+    conn = bootstrap_database(isolated_app_paths.db_path)
+    index_problem_bank(conn, isolated_app_paths.problems_dir)
+    cli_module.set_active_slug(conn, "two-sum")
+    _seed_attempt(conn, slug="two-sum", code_snapshot="def two_sum(nums, target):\n    return [0, 1]\n")
+    conn.close()
+
+    result = runner.invoke(app, ["review"])
+
+    assert result.exit_code == 0
+    assert "## Interview Follow-ups" in result.stdout
+    assert "Interview follow-up." in result.stdout
 
 
 def test_hint_enforces_tier_and_persists_hint_tier(

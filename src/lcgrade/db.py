@@ -461,6 +461,12 @@ def reset_problem_state(conn: sqlite3.Connection, slug: str) -> dict[str, int | 
     }
 
 
+def clear_chat_messages(conn: sqlite3.Connection, slug: str) -> int:
+    with conn:
+        cursor = conn.execute("DELETE FROM chat_messages WHERE slug = ?", (slug,))
+    return int(cursor.rowcount)
+
+
 def prune_attempt_history(conn: sqlite3.Connection, *, keep_per_problem: int = 10) -> int:
     if keep_per_problem < 0:
         raise ValueError("keep_per_problem must be non-negative")
