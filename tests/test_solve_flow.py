@@ -5,7 +5,7 @@ import sqlite3
 
 import pytest
 
-from lcgrade.db import bootstrap_database, upsert_problem_record
+from lcgrade.db import bootstrap_database, fetch_problem_record, upsert_problem_record
 from lcgrade.execution import ExecutionSummary, hash_text
 from lcgrade.problems import ProblemDocument, ProblemMetadata, ProblemParam
 from lcgrade.solve_flow import solve_problem
@@ -138,3 +138,26 @@ def test_force_bypasses_existing_cache(problem_and_db: tuple[sqlite3.Connection,
     assert forced.requested_test_mode == "llm"
     assert forced.effective_test_mode == "bundled"
     assert forced.cached_attempt is None
+
+
+def test_solve_marks_problem_auto_solved_on_first_full_bundled_pass(
+    problem_and_db: tuple[sqlite3.Connection, ProblemDocument],
+) -> None:
+    conn, problem = problem_and_db
+    code_snapshot = problem.starter_path.read_text(encoding="utf-8")
+
+    def executor(executed_problem: ProblemDocument, solution_path: Path | None) -> ExecutionSummary:
+        assert solution_path == problem.starter_path
+        return build_execution(executed_problem, code_snapshot)
+
+    solve_problem(
+        conn,
+        problem,
+        requested_test_mode="bundled",
+        executor=executor,
+    )
+
+    record = fetch_problem_record(conn, problem.slug)
+    assert record is not None
+    assert int(record["auto_solved"]) == 1
+    assert record["auto_solved_at"] is not None

@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 import sqlite3
 from typing import Any, Iterable, Mapping, Sequence
 
-from .db import get_metadata_value
+from .db import get_metadata_value, mark_problem_review_generated
 from .extensions import ExtensionResult, ExtensionContext, get_extension
 from .llm import LLMBackend
 from .problems import ProblemDocument, load_problem_by_slug
@@ -327,6 +327,7 @@ def review_problem(
         attempt_id=int(attempt["id"]),
         review_text=stage2.review_text,
     )
+    mark_problem_review_generated(conn, slug)
     extension_results: list[ExtensionResult] = []
     if llm is not None:
         try:

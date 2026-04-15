@@ -5,7 +5,7 @@ from pathlib import Path
 import sqlite3
 from typing import Any, Callable, Mapping
 
-from .db import CacheKey, find_cached_attempt, insert_attempt
+from .db import CacheKey, find_cached_attempt, insert_attempt, mark_problem_auto_solved
 from .execution import ExecutionSummary, execute_solution, hash_text
 from .problems import ProblemDocument
 from .types import AttemptSummary
@@ -189,6 +189,8 @@ def solve_problem(
         status=execution.status,
         code_snapshot=execution.code_snapshot,
     )
+    if execution.bundled_total > 0 and execution.bundled_passed == execution.bundled_total:
+        mark_problem_auto_solved(conn, problem.slug)
     return SolveFlowResult(
         problem=problem,
         requested_test_mode=normalized_test_mode,

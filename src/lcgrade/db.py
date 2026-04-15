@@ -361,3 +361,58 @@ def find_cached_attempt(conn: sqlite3.Connection, slug: str, cache_key: CacheKey
     if row is None:
         return None
     return dict(row)
+
+
+def set_problem_milestone(
+    conn: sqlite3.Connection,
+    *,
+    slug: str,
+    flag_column: str,
+    timestamp_column: str,
+) -> bool:
+    """Set a sticky problem milestone if it has not already been set.
+
+    Returns True when the milestone transitioned from false to true.
+    """
+
+    allowed_pairs = {
+        ("auto_solved", "auto_solved_at"),
+        ("manual_solved", "manual_solved_at"),
+        ("review_generated", "review_generated_at"),
+        ("review_acknowledged", "review_acknowledged_at"),
+        ("followup_completed", "followup_completed_at"),
+    }
+    if (flag_column, timestamp_column) not in allowed_pairs:
+        raise ValueError(f"Unsupported milestone columns: {flag_column}, {timestamp_column}")
+
+    timestamp = datetime.now(timezone.utc).isoformat()
+    with conn:
+        cursor = conn.execute(
+            f"""
+            UPDATE problems
+            SET
+                {flag_column} = 1,
+                {timestamp_column} = COALESCE({timestamp_column}, ?)
+            WHERE slug = ? AND {flag_column} = 0
+            """,
+            (timestamp, slug),
+        )
+    return cursor.rowcount > 0
+
+
+def mark_problem_auto_solved(conn: sqlite3.Connection, slug: str) -> bool:
+    return set_problem_milestone(
+        conn,
+        slug=slug,
+        flag_column="auto_solved",
+        timestamp_column="auto_solved_at",
+    )
+
+
+def mark_problem_review_generated(conn: sqlite3.Connection, slug: str) -> bool:
+    return set_problem_milestone(
+        conn,
+        slug=slug,
+        flag_column="review_generated",
+        timestamp_column="review_generated_at",
+    )

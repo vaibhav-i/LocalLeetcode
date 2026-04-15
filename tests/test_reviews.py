@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from lcgrade.db import bootstrap_database, insert_attempt
+from lcgrade.db import bootstrap_database, fetch_problem_record, insert_attempt
 from lcgrade.execution import hash_text
 from lcgrade.llm import LLMBackend, LLMResponse, MockBackend, ModelInfo
 from lcgrade.problems import index_problem_bank, load_problem_by_slug
@@ -121,3 +121,23 @@ def test_review_problem_skips_when_backend_unavailable(db_conn) -> None:
     assert result.skipped_reason == "LLM backend unavailable."
     assert db_conn.execute("SELECT COUNT(*) AS count FROM reviews").fetchone()["count"] == 0
     assert db_conn.execute("SELECT COUNT(*) AS count FROM extension_results").fetchone()["count"] == 0
+
+
+def test_review_problem_marks_problem_review_generated(db_conn) -> None:
+    code_snapshot = (Path(__file__).resolve().parents[1] / "problems" / "two-sum" / "solutions" / "reference.py").read_text(encoding="utf-8")
+    _seed_attempt(db_conn, slug="two-sum", code_snapshot=code_snapshot)
+    backend = MockBackend(
+        responses=[
+            "## Complexity\nO(n)\n\n## Correctness\nCorrect.\n\n## Code Quality\nClear.\n\n## Edge Cases\nReasonable.\n\n## Verdict\nPass.",
+            "One follow-up.",
+            "One optimization.",
+        ]
+    )
+
+    result = review_problem(db_conn, "two-sum", llm=backend)
+
+    assert result.review_id is not None
+    record = fetch_problem_record(db_conn, "two-sum")
+    assert record is not None
+    assert int(record["review_generated"]) == 1
+    assert record["review_generated_at"] is not None
