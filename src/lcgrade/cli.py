@@ -9,6 +9,7 @@ from rich.table import Table
 
 from .config import discover_paths
 from .execution import ExecutionError, execute_solution
+from .preflight import PreflightError
 from .solver import build_pending_attempt
 
 app = typer.Typer(help="Local-first CLI auto-grader for LeetCode-style problems.")
@@ -89,7 +90,8 @@ def solve(
 
         try:
             execution = execute_solution(problem, solution)
-        except ExecutionError as exc:
+        except (ExecutionError, PreflightError) as exc:
+            console.print(f"[red]{exc}[/red]")
             raise typer.Exit(code=1) from exc
 
         cache_key = CacheKey(

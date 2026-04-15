@@ -10,6 +10,7 @@ from types import ModuleType
 from typing import Any, Callable
 
 from .problems import ProblemDocument
+from .preflight import run_preflight
 from .types import TestCase, TestVerdict
 from .validators import get_validator
 
@@ -61,6 +62,7 @@ def execute_solution(
     if resolved_solution is None or not resolved_solution.exists():
         raise ExecutionError(f"No solution file found for {problem.slug}")
 
+    run_preflight(problem, resolved_solution)
     code_snapshot = resolved_solution.read_text(encoding="utf-8")
     code_hash = hash_text(code_snapshot)
     tests_hash = problem.tests_hash or hash_text("[]")

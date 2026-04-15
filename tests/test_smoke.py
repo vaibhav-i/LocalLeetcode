@@ -59,3 +59,12 @@ def test_solve_uses_cache_for_unchanged_solution() -> None:
     assert second.exit_code == 0
     assert "Saved a new attempt snapshot." in first.stdout
     assert "Using cached results." in second.stdout
+
+
+def test_solve_reports_missing_expected_function(tmp_path: Path) -> None:
+    broken = tmp_path / "broken_solution.py"
+    broken.write_text("def not_two_sum(nums, target):\n    return []\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["solve", "two-sum", "--solution", str(broken)])
+
+    assert result.exit_code == 1
