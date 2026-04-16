@@ -20,6 +20,7 @@ from .db import (
 )
 from .execution import ExecutionError
 from .llm import MLXBackend, OllamaBackend
+from .logging_utils import configure_logging, get_logger
 from .preflight import PreflightError
 from .reviews import DEFAULT_STAGE3_EXTENSIONS, review_problem
 from .setup_wizard import inspect_setup, persist_setup_config, pull_ollama_model
@@ -27,12 +28,32 @@ from .solve_flow import SolveFlowError, solve_problem
 
 app = typer.Typer(help="Local-first CLI auto-grader for LeetCode-style problems.")
 console = Console()
+logger = get_logger("lcgrade.cli")
 
 
 def _lazy_imports():
     from .problems import index_problem_bank, load_problem_by_slug
 
     return index_problem_bank, load_problem_by_slug
+
+
+@app.callback()
+def app_callback(
+    ctx: typer.Context,
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show info-level logs on stderr."),
+    debug: bool = typer.Option(False, "--debug", help="Show debug logs on stderr and write .lcgrade/lcgrade.log."),
+) -> None:
+    paths = discover_paths()
+    log_state = configure_logging(paths, verbose=verbose, debug=debug)
+    ctx.obj = {"paths": paths, "log_state": log_state}
+    logger.info(
+        "CLI startup",
+        extra={
+            "verbose": verbose,
+            "debug": debug,
+            "log_file_path": str(log_state.log_file_path) if log_state.log_file_path else None,
+        },
+    )
 
 
 def _configured_app_config(paths) -> AppConfig:
@@ -148,6 +169,7 @@ def _select_setup_model(status) -> str:
 @app.command()
 def init() -> None:
     paths = discover_paths()
+    logger.info("Running init", extra={"workspace_root": str(paths.workspace_root)})
     index_problem_bank, _ = _lazy_imports()
     paths.data_dir.mkdir(parents=True, exist_ok=True)
     connection = bootstrap_database(paths.db_path)
@@ -166,6 +188,7 @@ def init() -> None:
 @app.command()
 def list_problems() -> None:
     paths = discover_paths()
+    logger.info("Listing problems", extra={"workspace_root": str(paths.workspace_root)})
     index_problem_bank, _ = _lazy_imports()
     paths.data_dir.mkdir(parents=True, exist_ok=True)
     connection = bootstrap_database(paths.db_path)
@@ -197,6 +220,7 @@ def setup(
     check: bool = typer.Option(False, "--check", help="Report current environment without mutating setup state."),
 ) -> None:
     paths = discover_paths()
+    logger.info("Running setup", extra={"check_only": check, "workspace_root": str(paths.workspace_root)})
     status = inspect_setup(paths, check_only=check)
 
     if check:
@@ -256,6 +280,7 @@ def setup(
         raise typer.Exit(code=1)
 
     if not status.ollama_reachable:
+        logger.warning("Ollama unreachable during setup", extra={"detail": status.ollama_detail})
         console.print(
             Panel.fit(
                 "\n".join(
@@ -273,11 +298,13 @@ def setup(
         raise typer.Exit(code=1)
 
     selected_model = _select_setup_model(status)
+    logger.info("Selected setup model", extra={"model": selected_model, "ram_gb": status.ram_gb})
     model_backend = OllamaBackend(model=selected_model)
     selected_model_installed = False
     try:
         selected_model_installed = model_backend.model_installed()
     except Exception as exc:
+        logger.error("Selected model verification failed", extra={"model": selected_model, "error": str(exc)})
         console.print(
             Panel.fit(
                 "\n".join(
@@ -311,6 +338,7 @@ def setup(
             )
         )
         if not typer.confirm(f"Pull `{selected_model}` now?", default=True):
+            logger.warning("User declined Ollama pull", extra={"model": selected_model})
             console.print(
                 Panel.fit(
                     "\n".join(
@@ -326,8 +354,10 @@ def setup(
             raise typer.Exit(code=1)
 
         console.print(f"Pulling {selected_model} via Ollama...")
+        logger.info("Pulling Ollama model", extra={"model": selected_model})
         pulled, pull_error = pull_ollama_model(selected_model)
         if not pulled:
+            logger.error("Ollama pull failed", extra={"model": selected_model, "error": pull_error})
             console.print(
                 Panel.fit(
                     "\n".join(
@@ -345,8 +375,17 @@ def setup(
             raise typer.Exit(code=1)
 
     config = persist_setup_config(paths, backend="ollama", model=selected_model)
+    logger.info("Persisted setup config", extra={"backend": config.backend, "model": config.model})
     final_status = inspect_setup(paths, check_only=False)
     if not final_status.db_ready or final_status.indexing_error is not None or not final_status.model_available:
+        logger.error(
+            "Setup validation failed",
+            extra={
+                "db_ready": final_status.db_ready,
+                "indexing_error": final_status.indexing_error,
+                "ollama_detail": final_status.ollama_detail,
+            },
+        )
         console.print(
             Panel.fit(
                 "\n".join(
@@ -392,6 +431,7 @@ def setup(
 @app.command()
 def start(slug: str = typer.Argument(..., help="Problem slug to make active.")) -> None:
     paths = discover_paths()
+    logger.info("Starting problem", extra={"slug": slug})
     index_problem_bank, load_problem = _lazy_imports()
     paths.data_dir.mkdir(parents=True, exist_ok=True)
     connection = bootstrap_database(paths.db_path)
@@ -428,6 +468,7 @@ def reset(slug: str | None = typer.Argument(None, help="Problem slug whose local
     try:
         index_problem_bank(connection, paths.problems_dir)
         slug = _resolve_target_slug(connection, slug)
+        logger.info("Resetting problem state", extra={"slug": slug})
         problem = load_problem(connection, slug)
         if problem is None:
             raise typer.BadParameter(f"Unknown problem slug: {slug}")
@@ -448,6 +489,7 @@ def reset(slug: str | None = typer.Argument(None, help="Problem slug whose local
 @app.command()
 def prune() -> None:
     paths = discover_paths()
+    logger.info("Pruning attempt history")
     index_problem_bank, _ = _lazy_imports()
     paths.data_dir.mkdir(parents=True, exist_ok=True)
     connection = bootstrap_database(paths.db_path)
@@ -481,6 +523,10 @@ def solve(
 ) -> None:
     paths = discover_paths()
     index_problem_bank, load_problem = _lazy_imports()
+    logger.info(
+        "Running solve",
+        extra={"slug": slug, "requested_tests": tests, "force": force, "backend": backend or "configured"},
+    )
 
     paths.data_dir.mkdir(parents=True, exist_ok=True)
     connection = bootstrap_database(paths.db_path)
@@ -492,25 +538,48 @@ def solve(
             raise typer.BadParameter(f"Unknown problem slug: {slug}")
 
         try:
+            llm_backend = _build_backend(paths, backend) if tests in {"llm", "both"} else None
             flow = solve_problem(
                 connection,
                 problem,
                 solution_path=_resolve_solution_path(paths, solution),
                 requested_test_mode=tests,
                 force=force,
-                llm=_build_backend(paths, backend) if tests in {"llm", "both"} else None,
+                llm=llm_backend,
             )
         except (ExecutionError, PreflightError, SolveFlowError) as exc:
+            logger.error("Solve failed before completion", extra={"slug": slug, "error": str(exc)})
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(code=1) from exc
         if flow.attempt.bundled_total > 0 and flow.attempt.bundled_passed == flow.attempt.bundled_total:
             clear_chat_messages(connection, problem.slug)
             if get_active_slug(connection) == problem.slug:
                 clear_active_slug(connection)
+            logger.info("Solve passed bundled tests and cleared active state", extra={"slug": problem.slug})
     finally:
         connection.close()
 
     llm_tests_message = flow.test_generation_result.warning if flow.test_generation_result is not None else None
+    if flow.test_generation_result is not None and flow.test_generation_result.generation_error:
+        logger.warning(
+            "LLM test generation fallback activated",
+            extra={
+                "slug": flow.problem.slug,
+                "requested_mode": flow.requested_test_mode,
+                "effective_mode": flow.effective_test_mode,
+                "reason": flow.test_generation_result.generation_error,
+            },
+        )
+    logger.info(
+        "Solve completed",
+        extra={
+            "slug": flow.problem.slug,
+            "used_cache": flow.used_cache,
+            "requested_mode": flow.requested_test_mode,
+            "effective_mode": flow.effective_test_mode,
+            "status": flow.attempt.status,
+        },
+    )
 
     console.print(
         Panel.fit(
@@ -552,6 +621,7 @@ def review(
 ) -> None:
     paths = discover_paths()
     index_problem_bank, _ = _lazy_imports()
+    logger.info("Running review", extra={"slug": slug, "backend": backend or "configured", "extend": extend})
     paths.data_dir.mkdir(parents=True, exist_ok=True)
     connection = bootstrap_database(paths.db_path)
     try:
@@ -616,6 +686,7 @@ def chat(
 ) -> None:
     paths = discover_paths()
     index_problem_bank, _ = _lazy_imports()
+    logger.info("Running chat", extra={"message_length": len(message)})
     paths.data_dir.mkdir(parents=True, exist_ok=True)
     connection = bootstrap_database(paths.db_path)
     try:
@@ -642,6 +713,7 @@ def hint(
 ) -> None:
     paths = discover_paths()
     index_problem_bank, _ = _lazy_imports()
+    logger.info("Running hint", extra={"tier": tier, "message_length": len(message or "")})
     paths.data_dir.mkdir(parents=True, exist_ok=True)
     connection = bootstrap_database(paths.db_path)
     try:

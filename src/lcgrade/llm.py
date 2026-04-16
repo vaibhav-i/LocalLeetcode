@@ -15,6 +15,9 @@ import time
 from typing import Any, Mapping, Sequence
 from urllib import error, request
 
+from .logging_utils import get_logger
+
+logger = get_logger("lcgrade.llm")
 
 @dataclass(slots=True, frozen=True)
 class LLMResponse:
@@ -83,6 +86,7 @@ class LLMBackend(ABC):
 
         last_error: json.JSONDecodeError | None = None
         base_prompt = prompt
+        logger.debug("LLM generate_json prompt:\n%s", prompt)
         for attempt in range(retries):
             response = self.generate(
                 prompt=prompt,
@@ -94,6 +98,8 @@ class LLMBackend(ABC):
                 return self._parse_json_response(response.text)
             except json.JSONDecodeError as exc:
                 last_error = exc
+                logger.warning("LLM JSON parse retry %s/%s failed: %s", attempt + 1, retries, exc)
+                logger.debug("LLM JSON parse raw response:\n%s", response.text)
                 if attempt + 1 < retries:
                     prompt = self._json_retry_prompt(base_prompt, response.text)
 
@@ -185,6 +191,7 @@ class OllamaBackend(LLMBackend):
             else:
                 timeout_value = 30.0
         self.timeout = float(timeout_value)
+        logger.info("Initialized Ollama backend model=%s base_url=%s timeout=%.1f", self.model, self.base_url, self.timeout)
 
     def generate(
         self,
@@ -205,6 +212,7 @@ class OllamaBackend(LLMBackend):
         if system_prompt:
             payload["system"] = system_prompt
 
+        logger.debug("Ollama generate payload for model=%s:\n%s", self.model, json.dumps(payload, ensure_ascii=False))
         start = time.perf_counter()
         data = self._request_json("POST", "/api/generate", payload)
         elapsed_ms = (time.perf_counter() - start) * 1000.0
@@ -219,6 +227,7 @@ class OllamaBackend(LLMBackend):
         latency_ms = self._duration_to_ms(data.get("total_duration"))
         if latency_ms <= 0:
             latency_ms = elapsed_ms
+        logger.debug("Ollama raw response for model=%s:\n%s", self.model, json.dumps(data, ensure_ascii=False))
 
         return LLMResponse(text=text, tokens_used=tokens_used, latency_ms=latency_ms)
 
@@ -305,14 +314,17 @@ class OllamaBackend(LLMBackend):
             headers["Content-Type"] = "application/json"
 
         req = request.Request(url, data=body, headers=headers, method=method)
+        logger.debug("Ollama request method=%s url=%s", method, url)
         try:
             with request.urlopen(req, timeout=self.timeout) as response:
                 raw = response.read().decode("utf-8")
         except error.URLError as exc:
+            logger.error("Ollama request failed method=%s url=%s error=%s", method, url, exc)
             raise ConnectionError(f"Could not reach Ollama at {self.base_url}: {exc}") from exc
 
         if not raw.strip():
             return {}
+        logger.debug("Ollama raw body from %s:\n%s", path, raw)
         parsed = json.loads(raw)
         if not isinstance(parsed, dict):
             raise ValueError(f"Expected JSON object from Ollama, got {type(parsed).__name__}")

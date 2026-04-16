@@ -7,6 +7,10 @@ import json
 import sqlite3
 from typing import Any, Iterable, Mapping
 
+from .logging_utils import get_logger
+
+logger = get_logger("lcgrade.db")
+
 SCHEMA_VERSION = 1
 
 _SCHEMA_V1 = """
@@ -142,6 +146,7 @@ def open_database(path: str | Path) -> sqlite3.Connection:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
+    logger.info("Opening database at %s", path)
     return configure_connection(conn)
 
 
@@ -184,10 +189,12 @@ def get_active_slug(conn: sqlite3.Connection) -> str | None:
 
 
 def set_active_slug(conn: sqlite3.Connection, slug: str | None) -> None:
+    logger.info("Setting active slug to %s", slug)
     set_metadata_value(conn, "active_slug", slug)
 
 
 def clear_active_slug(conn: sqlite3.Connection) -> None:
+    logger.info("Clearing active slug")
     set_active_slug(conn, None)
 
 
@@ -347,6 +354,7 @@ def insert_attempt(
                 code_snapshot,
             ),
         )
+    logger.info("Inserted attempt for %s status=%s test_mode=%s", slug, status, test_mode)
     return int(cursor.lastrowid)
 
 
@@ -362,7 +370,9 @@ def find_cached_attempt(conn: sqlite3.Connection, slug: str, cache_key: CacheKey
         (slug, cache_key.code_hash, cache_key.test_mode, cache_key.tests_hash),
     ).fetchone()
     if row is None:
+        logger.info("No cached attempt for %s mode=%s", slug, cache_key.test_mode)
         return None
+    logger.info("Found cached attempt for %s mode=%s", slug, cache_key.test_mode)
     return dict(row)
 
 
@@ -400,6 +410,8 @@ def set_problem_milestone(
             """,
             (timestamp, slug),
         )
+    if cursor.rowcount > 0:
+        logger.info("Set milestone %s for %s", flag_column, slug)
     return cursor.rowcount > 0
 
 
@@ -445,6 +457,7 @@ def reset_problem_milestones(conn: sqlite3.Connection, slug: str) -> bool:
 
 
 def reset_problem_state(conn: sqlite3.Connection, slug: str) -> dict[str, int | bool]:
+    logger.info("Resetting problem state for %s", slug)
     with conn:
         chat_cursor = conn.execute("DELETE FROM chat_messages WHERE slug = ?", (slug,))
         attempt_cursor = conn.execute("DELETE FROM attempts WHERE slug = ?", (slug,))
@@ -464,6 +477,7 @@ def reset_problem_state(conn: sqlite3.Connection, slug: str) -> dict[str, int | 
 def clear_chat_messages(conn: sqlite3.Connection, slug: str) -> int:
     with conn:
         cursor = conn.execute("DELETE FROM chat_messages WHERE slug = ?", (slug,))
+    logger.info("Cleared %s chat message(s) for %s", cursor.rowcount, slug)
     return int(cursor.rowcount)
 
 
@@ -494,6 +508,7 @@ def prune_attempt_history(conn: sqlite3.Connection, *, keep_per_problem: int = 1
                 ids_to_delete,
             )
         deleted += int(cursor.rowcount)
+        logger.info("Pruned %s attempt(s) for %s", cursor.rowcount, slug)
     return deleted
 
 
@@ -522,6 +537,7 @@ def insert_chat_message(
             """,
             (slug, session_id, role, message, hint_tier, timestamp),
         )
+    logger.info("Inserted chat message for %s session=%s role=%s", slug, session_id, role)
     return int(cursor.lastrowid)
 
 

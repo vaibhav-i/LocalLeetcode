@@ -7,6 +7,9 @@ import time
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from .logging_utils import get_logger
+
+logger = get_logger("lcgrade.execution")
 
 @dataclass(slots=True)
 class SandboxRun:
@@ -47,6 +50,7 @@ def run_python_script(
         str(resolved_script),
         *tuple(args),
     )
+    logger.debug("Launching sandbox command=%s cwd=%s", command, cwd)
 
     started = time.perf_counter()
     process = subprocess.Popen(
@@ -69,6 +73,7 @@ def run_python_script(
         process.kill()
         stdout, stderr = process.communicate()
         returncode = None
+        logger.error("Sandbox timed out for command=%s timeout_seconds=%s", command, timeout_seconds)
 
     duration_ms = (time.perf_counter() - started) * 1000.0
     return SandboxRun(

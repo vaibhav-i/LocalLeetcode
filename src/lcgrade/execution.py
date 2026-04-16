@@ -10,12 +10,14 @@ import time
 from types import ModuleType
 from typing import Any, Callable, Sequence
 
+from .logging_utils import get_logger
 from .problems import ProblemDocument
 from .preflight import run_preflight
 from .sandbox import run_python_script
 from .types import TestCase, TestVerdict
 from .validators import get_validator
 
+logger = get_logger("lcgrade.execution")
 
 class ExecutionError(RuntimeError):
     """Raised when a solution file cannot be loaded or executed."""
@@ -105,8 +107,10 @@ def execute_solution(
     if resolved_solution is None or not resolved_solution.exists():
         raise ExecutionError(f"No solution file found for {problem.slug}")
 
+    logger.info("Executing solution for %s from %s", problem.slug, resolved_solution)
     run_preflight(problem, resolved_solution)
     code_snapshot = resolved_solution.read_text(encoding="utf-8")
+    logger.debug("Code snapshot for %s:\n%s", problem.slug, code_snapshot)
     code_hash = hash_text(code_snapshot)
     tests_hash = problem.tests_hash or hash_text("[]")
     active_test_cases = list(test_cases) if test_cases is not None else load_test_cases(problem)
@@ -118,6 +122,7 @@ def execute_solution(
         runner_path = Path(tmp_dir) / "runner.py"
         runner_path.write_text(_SANDBOX_RUNNER_SOURCE, encoding="utf-8")
         for test_case in active_test_cases:
+            logger.debug("Running test case %s for %s", test_case.name, problem.slug)
             verdict = run_test_case_in_sandbox(
                 runner_path=runner_path,
                 solution_path=resolved_solution,
@@ -218,7 +223,18 @@ def run_test_case_in_sandbox(
         stdin_text=payload,
         timeout_seconds=timeout_seconds,
     )
+    logger.debug(
+        "Sandbox run for %s command=%s returncode=%s timed_out=%s duration_ms=%.2f stdout_len=%s stderr_len=%s",
+        test_case.name,
+        sandbox_run.command,
+        sandbox_run.returncode,
+        sandbox_run.timed_out,
+        sandbox_run.duration_ms,
+        len(sandbox_run.stdout),
+        len(sandbox_run.stderr),
+    )
     if sandbox_run.timed_out:
+        logger.error("Sandbox timeout for test case %s after %.2fs", test_case.name, timeout_seconds)
         return TestVerdict(
             name=test_case.name,
             passed=False,
@@ -231,6 +247,7 @@ def run_test_case_in_sandbox(
     stdout = sandbox_run.stdout.strip()
     stderr = sandbox_run.stderr.strip()
     if not stdout:
+        logger.error("Sandbox produced no stdout for test case %s", test_case.name)
         return TestVerdict(
             name=test_case.name,
             passed=False,
@@ -243,6 +260,7 @@ def run_test_case_in_sandbox(
     try:
         payload = json.loads(stdout.splitlines()[-1])
     except json.JSONDecodeError:
+        logger.error("Sandbox returned non-JSON stdout for test case %s: %s", test_case.name, stdout)
         return TestVerdict(
             name=test_case.name,
             passed=False,
@@ -253,6 +271,7 @@ def run_test_case_in_sandbox(
         )
 
     if not payload.get("ok", False):
+        logger.error("Sandbox runtime error for test case %s: %s", test_case.name, payload.get("error") or stderr)
         return TestVerdict(
             name=test_case.name,
             passed=False,

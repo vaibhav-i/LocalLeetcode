@@ -17,10 +17,12 @@ from typing import Any, Iterable, Mapping, Sequence
 from .db import get_metadata_value, mark_problem_review_generated
 from .extensions import ExtensionResult, ExtensionContext, get_extension
 from .llm import LLMBackend
+from .logging_utils import get_logger
 from .problems import ProblemDocument, load_problem_by_slug
 from .types import TestVerdict
 
 DEFAULT_STAGE3_EXTENSIONS: tuple[str, ...] = ("interview", "optimize")
+logger = get_logger("lcgrade.review")
 
 
 @dataclass(slots=True, frozen=True)
@@ -58,7 +60,9 @@ def fetch_latest_attempt(conn: sqlite3.Connection, slug: str) -> dict[str, Any] 
         (slug,),
     ).fetchone()
     if row is None:
+        logger.info("No saved attempt found for %s", slug)
         return None
+    logger.info("Loaded latest attempt for %s", slug)
     return dict(row)
 
 
@@ -120,17 +124,20 @@ def generate_beta_stage2_review(
     """Generate the Stage 2 review, falling back cleanly when unavailable."""
 
     if llm is None:
+        logger.warning("Stage 2 review skipped for %s: no LLM backend", problem.slug)
         return Stage2ReviewResult(generated=False, review_text=None, reason="No LLM backend provided.")
 
     try:
         if not llm.available():
             reason = llm.unavailable_reason() or "LLM backend unavailable."
+            logger.warning("Stage 2 review skipped for %s: %s", problem.slug, reason)
             return Stage2ReviewResult(
                 generated=False,
                 review_text=None,
                 reason=reason,
             )
     except Exception as exc:
+        logger.error("Stage 2 availability check failed for %s: %s", problem.slug, exc)
         return Stage2ReviewResult(
             generated=False,
             review_text=None,
@@ -138,6 +145,7 @@ def generate_beta_stage2_review(
         )
 
     prompt = build_stage2_prompt(problem, attempt)
+    logger.debug("Stage 2 prompt for %s:\n%s", problem.slug, prompt)
     try:
         response = llm.generate(
             prompt=prompt,
@@ -146,6 +154,7 @@ def generate_beta_stage2_review(
             max_tokens=1200,
         )
     except Exception as exc:
+        logger.error("Stage 2 review generation failed for %s: %s", problem.slug, exc)
         return Stage2ReviewResult(
             generated=False,
             review_text=None,
@@ -153,7 +162,9 @@ def generate_beta_stage2_review(
         )
 
     text = response.text.strip()
+    logger.debug("Stage 2 raw response for %s:\n%s", problem.slug, response.text)
     if not text:
+        logger.warning("Stage 2 review returned empty text for %s", problem.slug)
         return Stage2ReviewResult(
             generated=False,
             review_text=None,
@@ -195,6 +206,7 @@ def persist_review(
     row = conn.execute("SELECT id FROM reviews WHERE attempt_id = ?", (attempt_id,)).fetchone()
     if row is None:  # pragma: no cover - defensive only
         raise RuntimeError(f"Failed to persist review for attempt {attempt_id}")
+    logger.info("Persisted review for attempt_id=%s", attempt_id)
     return int(row["id"])
 
 
@@ -221,6 +233,7 @@ def persist_extension_result(
             """,
             (review_id, extension_name, output_text, timestamp),
         )
+    logger.info("Persisted extension result %s for review_id=%s", extension_name, review_id)
     return int(cursor.lastrowid)
 
 
@@ -312,6 +325,7 @@ def run_registered_extensions(
 
     results: list[ExtensionResult] = []
     for extension_name in extension_names:
+        logger.info("Running Stage 3 extension %s for %s", extension_name, problem.slug)
         try:
             extension = get_extension(extension_name)
         except KeyError as exc:
@@ -327,6 +341,7 @@ def run_registered_extensions(
         try:
             results.append(extension.run(context, llm))
         except Exception as exc:
+            logger.error("Stage 3 extension %s failed for %s: %s", extension_name, problem.slug, exc)
             results.append(
                 ExtensionResult(
                     name=extension.name(),
@@ -345,6 +360,7 @@ def review_problem(
     extension_names: Sequence[str] = DEFAULT_STAGE3_EXTENSIONS,
 ) -> ReviewPipelineResult:
     """Run the review slice against the latest saved attempt for a slug."""
+    logger.info("Review pipeline started for %s", slug)
 
     problem = load_problem_by_slug(conn, slug)
     if problem is None:
@@ -363,6 +379,7 @@ def review_problem(
 
     stage2 = generate_beta_stage2_review(problem, attempt, llm)
     if not stage2.generated or stage2.review_text is None:
+        logger.warning("Review pipeline skipped for %s: %s", slug, stage2.reason)
         return ReviewPipelineResult(
             slug=slug,
             attempt_id=int(attempt["id"]),
@@ -378,6 +395,7 @@ def review_problem(
         review_text=stage2.review_text,
     )
     mark_problem_review_generated(conn, slug)
+    logger.info("Marked %s as review-generated", slug)
     extension_results: list[ExtensionResult] = []
     if llm is not None:
         try:
@@ -390,7 +408,13 @@ def review_problem(
                     extension_names=extension_names,
                 )
                 persist_extension_results(conn, review_id=review_id, results=extension_results)
+                logger.info(
+                    "Persisted %s extension result(s) for %s",
+                    len(extension_results),
+                    slug,
+                )
         except Exception:
+            logger.exception("Stage 3 extensions failed for %s", slug)
             extension_results = []
 
     return ReviewPipelineResult(

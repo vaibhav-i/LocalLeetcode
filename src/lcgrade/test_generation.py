@@ -6,10 +6,12 @@ from typing import Any, Mapping, Sequence
 
 from .execution import load_test_cases
 from .llm import LLMBackend, ModelInfo
+from .logging_utils import get_logger
 from .problems import ProblemDocument
 from .types import TestCase
 
 __test__ = False
+logger = get_logger("lcgrade.solve")
 
 VALID_TEST_MODES = ("bundled", "llm", "both")
 
@@ -163,6 +165,7 @@ def generate_test_generation(
 ) -> TestGenerationResult:
     normalized = normalize_test_mode(requested_test_mode)
     bundled = tuple(bundled_test_cases) if bundled_test_cases is not None else load_bundled_test_cases(problem)
+    logger.info("Generating test plan for %s with mode=%s", problem.slug, normalized)
 
     llm_requested = normalized in {"llm", "both"}
     if not llm_requested:
@@ -184,6 +187,7 @@ def generate_test_generation(
             reason = llm.unavailable_reason()
             if reason:
                 warning = f"{reason} Using bundled tests only."
+        logger.warning("LLM test generation unavailable for %s: %s", problem.slug, warning)
         return TestGenerationResult(
             problem_slug=problem.slug,
             requested_test_mode=normalized,
@@ -203,6 +207,7 @@ def generate_test_generation(
         max_generated_cases=max_generated_cases,
     )
     llm_model_info = llm.model_info()
+    logger.debug("Test generation prompt for %s:\n%s", problem.slug, prompt)
     try:
         payload = llm.generate_json(
             prompt,
@@ -229,6 +234,7 @@ def generate_test_generation(
             raw_payload=payload,
         )
     except Exception as exc:
+        logger.warning("LLM test generation failed for %s: %s", problem.slug, exc)
         return TestGenerationResult(
             problem_slug=problem.slug,
             requested_test_mode=normalized,

@@ -6,11 +6,13 @@ from typing import Sequence
 
 from .db import fetch_recent_chat_messages, get_active_slug, insert_chat_message
 from .llm import LLMBackend
+from .logging_utils import get_logger
 from .problems import ProblemDocument, load_problem_by_slug
 from .reviews import fetch_latest_attempt, problem_review_status
 
 DEFAULT_CHAT_SESSION_ID = "default"
 VALID_HINT_TIERS = (1, 2, 3)
+logger = get_logger("lcgrade.chat")
 
 
 @dataclass(slots=True, frozen=True)
@@ -116,8 +118,10 @@ def run_chat_turn(
     system_prompt: str | None = None,
     hint_tier: int | None = None,
 ) -> ChatTurnResult:
+    logger.info("Chat turn started for session=%s", session_id)
     slug, problem = _resolve_active_problem(conn)
     if slug is None or problem is None:
+        logger.warning("Chat skipped: no active problem")
         return ChatTurnResult(
             slug=None,
             response_text=None,
@@ -126,6 +130,7 @@ def run_chat_turn(
         )
 
     if llm is None:
+        logger.warning("Chat skipped for %s: no LLM backend", slug)
         return ChatTurnResult(
             slug=slug,
             response_text=None,
@@ -136,6 +141,7 @@ def run_chat_turn(
     try:
         if not llm.available():
             reason = llm.unavailable_reason() or "LLM backend unavailable."
+            logger.warning("Chat skipped for %s: %s", slug, reason)
             return ChatTurnResult(
                 slug=slug,
                 response_text=None,
@@ -143,6 +149,7 @@ def run_chat_turn(
                 skipped_reason=reason,
             )
     except Exception as exc:
+        logger.error("Chat availability check failed for %s: %s", slug, exc)
         return ChatTurnResult(
             slug=slug,
             response_text=None,
@@ -163,6 +170,7 @@ def run_chat_turn(
         latest_review_text=latest_review_text,
         recent_messages=recent_messages,
     )
+    logger.debug("Chat prompt for %s:\n%s", slug, prompt)
 
     try:
         response = llm.generate(
@@ -172,6 +180,7 @@ def run_chat_turn(
             max_tokens=900,
         )
     except Exception as exc:
+        logger.error("Chat generation failed for %s: %s", slug, exc)
         return ChatTurnResult(
             slug=slug,
             response_text=None,
@@ -180,7 +189,9 @@ def run_chat_turn(
         )
 
     text = response.text.strip()
+    logger.debug("Chat raw response for %s:\n%s", slug, response.text)
     if not text:
+        logger.warning("Chat returned empty response for %s", slug)
         return ChatTurnResult(
             slug=slug,
             response_text=None,
@@ -204,6 +215,7 @@ def run_chat_turn(
         message=text,
         hint_tier=hint_tier,
     )
+    logger.info("Persisted chat turn for %s in session=%s", slug, session_id)
     return ChatTurnResult(
         slug=slug,
         response_text=text,
@@ -221,6 +233,7 @@ def run_hint_turn(
     session_id: str = DEFAULT_CHAT_SESSION_ID,
 ) -> ChatTurnResult:
     if tier not in VALID_HINT_TIERS:
+        logger.warning("Hint skipped: invalid tier=%s", tier)
         return ChatTurnResult(
             slug=get_active_slug(conn),
             response_text=None,

@@ -8,11 +8,13 @@ from typing import Any, Callable, Mapping, Sequence
 from .db import CacheKey, find_cached_attempt, insert_attempt, mark_problem_auto_solved
 from .execution import ExecutionSummary, execute_solution, hash_text
 from .llm import LLMBackend
+from .logging_utils import get_logger
 from .problems import ProblemDocument
 from .test_generation import TestGenerationResult, generate_test_generation
 from .types import TestCase
 from .types import AttemptSummary
 
+logger = get_logger("lcgrade.solve")
 
 class SolveFlowError(RuntimeError):
     """Raised when the solve flow cannot prepare or execute a run."""
@@ -98,6 +100,7 @@ def prepare_solution_snapshot(
         raise SolveFlowError(f"No solution file found for {problem.slug}")
 
     code_snapshot = resolved_solution.read_text(encoding="utf-8")
+    logger.debug("Prepared solution snapshot for %s from %s", problem.slug, resolved_solution)
     return SolutionSnapshot(
         solution_path=resolved_solution,
         code_snapshot=code_snapshot,
@@ -135,6 +138,12 @@ def solve_problem(
     cache_lookup: Callable[[sqlite3.Connection, str, CacheKey], dict[str, Any] | None] = find_cached_attempt,
     save_attempt: Callable[..., int] = insert_attempt,
 ) -> SolveFlowResult:
+    logger.info(
+        "Solve flow started for %s (requested_test_mode=%s, force=%s)",
+        problem.slug,
+        requested_test_mode,
+        force,
+    )
     test_generation_result = generate_test_generation(
         problem,
         requested_test_mode=requested_test_mode,
@@ -142,6 +151,10 @@ def solve_problem(
     )
     normalized_test_mode = test_generation_result.requested_test_mode
     current_effective_test_mode = test_generation_result.effective_test_mode
+    if test_generation_result.warning:
+        logger.warning("Test generation warning for %s: %s", problem.slug, test_generation_result.warning)
+    if test_generation_result.generation_error:
+        logger.debug("Test generation error for %s: %s", problem.slug, test_generation_result.generation_error)
     solution_snapshot = prepare_solution_snapshot(problem, solution_path)
     cache_key = CacheKey(
         code_hash=solution_snapshot.code_hash,
@@ -154,6 +167,12 @@ def solve_problem(
         cached_row = cache_lookup(conn, problem.slug, cache_key)
         if cached_row is not None:
             cached_attempt = CachedAttemptRecord.from_mapping(cached_row)
+            logger.info(
+                "Solve flow cache hit for %s (test_mode=%s, code_hash=%s)",
+                problem.slug,
+                normalized_test_mode,
+                solution_snapshot.code_hash,
+            )
             return SolveFlowResult(
                 problem=problem,
                 requested_test_mode=normalized_test_mode,
@@ -174,6 +193,16 @@ def solve_problem(
         solution_snapshot.solution_path,
         test_generation_result.combined_test_cases(),
     )
+    logger.info(
+        "Execution completed for %s with status=%s bundled=%s/%s llm=%s/%s runtime_ms=%.2f",
+        problem.slug,
+        execution.status,
+        execution.bundled_passed,
+        execution.bundled_total,
+        execution.llm_passed,
+        execution.llm_total,
+        execution.runtime_ms,
+    )
     attempt = _attempt_from_execution(problem, normalized_test_mode, execution)
     attempt_id = save_attempt(
         conn,
@@ -191,6 +220,7 @@ def solve_problem(
     )
     if execution.bundled_total > 0 and execution.bundled_passed == execution.bundled_total:
         mark_problem_auto_solved(conn, problem.slug)
+        logger.info("Marked %s as auto-solved from bundled tests", problem.slug)
     return SolveFlowResult(
         problem=problem,
         requested_test_mode=normalized_test_mode,

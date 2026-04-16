@@ -50,7 +50,8 @@ def test_solve_smoke() -> None:
     assert "Effective tests mode: bundled" in result.stdout
     assert "Backend: ollama" in result.stdout
     assert "LLM tests: 0/0" in result.stdout
-    assert "Bundled tests: 0/2" in result.stdout
+    assert "Bundled tests: 2/2" in result.stdout
+    assert "Status: pass" in result.stdout
     assert "Using bundled tests only." in result.stdout
 
 
