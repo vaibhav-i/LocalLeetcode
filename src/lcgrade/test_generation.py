@@ -123,6 +123,16 @@ def load_bundled_test_cases(problem: ProblemDocument) -> tuple[TestCase, ...]:
     return tuple(load_test_cases(problem))
 
 
+def _fallback_warning(reason: str | None) -> str:
+    cleaned_reason = (reason or "").strip()
+    if not cleaned_reason:
+        return "LLM backend unavailable. Using bundled tests only."
+    cleaned_reason = cleaned_reason.rstrip(".")
+    if cleaned_reason.lower().endswith("using bundled tests only"):
+        return f"{cleaned_reason}."
+    return f"{cleaned_reason}. Using bundled tests only."
+
+
 def build_test_generation_prompt(
     problem: ProblemDocument,
     bundled_test_cases: Sequence[TestCase],
@@ -182,11 +192,10 @@ def generate_test_generation(
         )
 
     if llm is None or not llm.available():
-        warning = "LLM backend unavailable; using bundled tests only."
+        warning = _fallback_warning(None)
         if llm is not None:
             reason = llm.unavailable_reason()
-            if reason:
-                warning = f"{reason} Using bundled tests only."
+            warning = _fallback_warning(reason)
         logger.warning("LLM test generation unavailable for %s: %s", problem.slug, warning)
         return TestGenerationResult(
             problem_slug=problem.slug,

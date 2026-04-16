@@ -53,6 +53,8 @@ def test_solve_smoke() -> None:
     assert "Bundled tests: 2/2" in result.stdout
     assert "Status: pass" in result.stdout
     assert "Using bundled tests only." in result.stdout
+    assert "Active problem cleared after successful solve." in result.stdout
+    assert "lcgrade review two-sum" in result.stdout
 
 
 def test_solve_uses_cache_for_unchanged_solution() -> None:

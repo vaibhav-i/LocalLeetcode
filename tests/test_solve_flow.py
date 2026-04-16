@@ -259,4 +259,4 @@ def test_both_mode_falls_back_to_bundled_only_when_backend_unavailable(
     assert result.attempt.llm_passed == 0
     assert result.attempt.llm_total == 0
     assert result.test_generation_result is not None
-    assert result.test_generation_result.warning == "LLM backend unavailable; using bundled tests only."
+    assert result.test_generation_result.warning == "LLM backend unavailable. Using bundled tests only."

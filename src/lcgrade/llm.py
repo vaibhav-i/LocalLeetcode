@@ -264,6 +264,13 @@ class OllamaBackend(LLMBackend):
 
         context_window = self._extract_context_window(data)
         quantization = self._extract_quantization(data)
+        logger.debug(
+            "Ollama model info summary model=%s context_window=%s quantization=%s keys=%s",
+            self.model,
+            context_window,
+            quantization,
+            sorted(data.keys()),
+        )
         return ModelInfo(
             name=self.model,
             context_window=context_window,
@@ -324,7 +331,10 @@ class OllamaBackend(LLMBackend):
 
         if not raw.strip():
             return {}
-        logger.debug("Ollama raw body from %s:\n%s", path, raw)
+        if path == "/api/show":
+            logger.debug("Ollama raw body received from %s (length=%s)", path, len(raw))
+        else:
+            logger.debug("Ollama raw body from %s:\n%s", path, raw)
         parsed = json.loads(raw)
         if not isinstance(parsed, dict):
             raise ValueError(f"Expected JSON object from Ollama, got {type(parsed).__name__}")

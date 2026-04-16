@@ -560,6 +560,7 @@ def solve(
         connection.close()
 
     llm_tests_message = flow.test_generation_result.warning if flow.test_generation_result is not None else None
+    active_cleared = flow.attempt.bundled_total > 0 and flow.attempt.bundled_passed == flow.attempt.bundled_total
     if flow.test_generation_result is not None and flow.test_generation_result.generation_error:
         logger.warning(
             "LLM test generation fallback activated",
@@ -602,6 +603,14 @@ def solve(
                     f"Status: {flow.attempt.status}",
                     f"Runtime: {flow.attempt.runtime_ms:.2f} ms",
                     "Using cached results." if flow.used_cache else "Saved a new attempt snapshot.",
+                    *(
+                        [
+                            f"Active problem cleared after successful solve.",
+                            f"Next: `lcgrade review {flow.problem.slug}` or `lcgrade start {flow.problem.slug}`.",
+                        ]
+                        if active_cleared
+                        else []
+                    ),
                 ]
             ),
             title="lcgrade solve",
