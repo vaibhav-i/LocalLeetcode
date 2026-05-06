@@ -124,7 +124,9 @@ def test_review_problem_skips_when_backend_unavailable(db_conn) -> None:
 
     assert result.review_text is None
     assert result.review_id is None
-    assert result.skipped_reason == "LLM backend unavailable."
+    assert result.skipped_reason is not None
+    assert "This feature needs a local LLM backend." in result.skipped_reason
+    assert "Core lcgrade solving still works without one." in result.skipped_reason
     assert db_conn.execute("SELECT COUNT(*) AS count FROM reviews").fetchone()["count"] == 0
     assert db_conn.execute("SELECT COUNT(*) AS count FROM extension_results").fetchone()["count"] == 0
 

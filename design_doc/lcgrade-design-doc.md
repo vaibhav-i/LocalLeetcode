@@ -205,7 +205,7 @@ Extensions are discovered by scanning a registry. Users select which to run via 
 | Phase | Scope |
 |-------|-------|
 | **Beta** | All core abstractions (Runner, LLMBackend, Validator, Extension) with Python/Ollama/ExactMatch+SetEquality/InterviewQuestions+OptimizationPrompt implementations. Core eval pipeline end-to-end, Blind 75 problem bank from cojudge, subprocess sandbox. |
-| **v1** | Add MLXBackend + inference benchmarks, eval accuracy benchmarks, empirical complexity profiling (`scaling_inputs` generators + timing framework), additional Runners (Java, C++), additional Validators (FloatTolerance, Custom), Docker sandbox option, community extensions, optional cloud-agent backends via user-provided Claude/OpenAI/Gemini API keys |
+| **v1** | Add MLXBackend + inference benchmarks, eval accuracy benchmarks, empirical complexity profiling (`scaling_inputs` generators + timing framework), additional Runners (Java, C++), additional Validators (FloatTolerance, Custom), Docker sandbox option, community extensions. Optional cloud-agent backends via user-provided Claude/OpenAI/Gemini API keys are explicitly non-core convenience modes and only follow the local-backend work. |
 | **Polish** | `lcgrade setup` onboarding wizard, interactive TUI browser (textual), blog posts, README with demo GIF |
 
 ---
@@ -302,8 +302,9 @@ This also enables the `lcgrade review <slug>` command — re-run Stages 2/3 agai
 If the LLM backend is not available (`backend.available()` returns False):
 
 - **`--tests bundled`**: Works fully. No LLM needed.
-- **`--tests llm` or `--tests both`**: Falls back to provided-tests-only with a warning: "Ollama not running — using provided tests only. Run `lcgrade setup` to configure."
-- **Stage 2/3**: Skipped with a message: "LLM review skipped — Ollama not available. Run `lcgrade review two-sum` when ready."
+- **Core product remains usable**: `start`, `describe`, `solve` with bundled tests, `history`, `stats`, and `random` should all work offline without any LLM backend configured.
+- **`--tests llm` or `--tests both`**: Falls back to provided-tests-only with a warning that local AI-generated tests were skipped and bundled tests still ran.
+- **Stage 2/3**: Skipped with a message that this feature needs a local LLM backend, while core lcgrade solving still works without one.
 - **`lcgrade chat` / `lcgrade hint`**: Clear error: "Chat requires a running LLM backend. Run `ollama serve` to start."
 
 The tool should **always** do something useful rather than crash. Test results without LLM review are still valuable.
@@ -1007,7 +1008,7 @@ The slug is always optional — provide it to explicitly target a different prob
 
 | Command | Description |
 |---------|-------------|
-| `lcgrade init` | First-time setup: copy problem bank, create `~/.lcgrade/`, build SQLite index, detect editor, check for Ollama |
+| `lcgrade init` | First-time setup: copy problem bank, create `~/.lcgrade/`, build SQLite index, detect editor. Local LLM setup is optional and should not block the core offline workflow. |
 | `lcgrade list` | Show problem categories with solve counts |
 | `lcgrade list <category>` | Drill into a category, show individual problems with status |
 | `lcgrade list --all` | Flat list of all problems |
@@ -1238,7 +1239,7 @@ The user gets conversational continuity — the LLM knows what was tried and rul
 
 Located at `~/.lcgrade/config.yaml`:
 
-v1 should also support optional cloud-agent configuration here for users who want to use hosted models instead of only local backends. That includes user-provided API keys and backend selection for providers such as Claude, OpenAI, and Gemini.
+v1 may also support optional cloud-agent configuration here for users who explicitly want hosted models instead of local backends. That path is convenience-only, not core product direction. The offline/local value proposition remains primary, so MLX and other local backends take precedence over Claude/OpenAI/Gemini API-key support.
 
 ```yaml
 editor: code                # Editor command ($EDITOR override)
@@ -1505,7 +1506,7 @@ For quick reference, these are the decisions made during the design process:
 7. **Runner executes, Evaluator judges** — Single Responsibility. Runner captures raw outputs, Evaluator compares against expected values using Validators. Neither does the other's job.
 8. **LLM review and extensibility are separate stages** — Stage 2 is a fixed, opinionated analysis (same for every problem). Stage 3 is optional, pluggable, user-controlled (interview questions, custom review criteria).
 9. **Pipeline saves results per stage** — Stage 1 results saved immediately to `attempts` table. Stage 2 saved to `reviews` table. If a later stage fails, earlier results are preserved. `lcgrade review` re-runs Stages 2/3 without re-executing tests.
-10. **Graceful degradation** — Tool always does something useful. No Ollama? Fall back to provided tests. Stage 2 fails? Show test results and offer retry.
+10. **Graceful degradation** — Tool always does something useful. No local LLM? Core offline solving still works. Stage 2 fails? Show test results and offer retry.
 11. **LLM for complexity analysis from code structure** — AST heuristics are brittle; the LLM reads code and identifies patterns (nested loops, hash map usage, recursion with memoization). Empirical timing added in v1 to complement.
 12. **Bundled test answers pre-computed** — cojudge only has inputs; we run Python reference solutions once to generate expected outputs that ship with the package
 13. **LLM fallback for missing answers** — When no reference solution exists (custom problems), LLM generates expected outputs, flagged as unverified

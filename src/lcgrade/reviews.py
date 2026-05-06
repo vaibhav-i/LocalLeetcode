@@ -16,7 +16,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from .db import get_metadata_value, mark_problem_review_generated
 from .extensions import ExtensionResult, ExtensionContext, get_extension
-from .llm import LLMBackend
+from .llm import LLMBackend, local_llm_required_message
 from .logging_utils import get_logger
 from .problems import ProblemDocument, load_problem_by_slug
 from .types import TestVerdict
@@ -130,11 +130,15 @@ def generate_beta_stage2_review(
 
     if llm is None:
         logger.warning("Stage 2 review skipped for %s: no LLM backend", problem.slug)
-        return Stage2ReviewResult(generated=False, review_text=None, reason="No LLM backend provided.")
+        return Stage2ReviewResult(
+            generated=False,
+            review_text=None,
+            reason=local_llm_required_message(),
+        )
 
     try:
         if not llm.available():
-            reason = llm.unavailable_reason() or "LLM backend unavailable."
+            reason = local_llm_required_message(llm.unavailable_reason())
             logger.warning("Stage 2 review skipped for %s: %s", problem.slug, reason)
             return Stage2ReviewResult(
                 generated=False,
@@ -146,7 +150,7 @@ def generate_beta_stage2_review(
         return Stage2ReviewResult(
             generated=False,
             review_text=None,
-            reason=f"LLM availability check failed: {exc}",
+            reason=local_llm_required_message(f"LLM availability check failed: {exc}"),
         )
 
     prompt = build_stage2_prompt(problem, attempt)

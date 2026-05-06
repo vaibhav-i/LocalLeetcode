@@ -25,7 +25,7 @@ from .db import (
     set_active_slug,
 )
 from .execution import ExecutionError
-from .llm import MLXBackend, OllamaBackend
+from .llm import MLXBackend, OllamaBackend, local_llm_enablement_commands
 from .logging_utils import configure_logging, get_logger
 from .preflight import PreflightError
 from .reviews import DEFAULT_STAGE3_EXTENSIONS, review_problem
@@ -209,6 +209,16 @@ def _select_setup_model(status) -> str:
     except (ValueError, IndexError):
         raise typer.BadParameter("Invalid model selection.")
     return selected_choice["name"]
+
+
+def _core_setup_ready(status) -> bool:
+    return status.db_ready and status.indexing_error is None
+
+
+def _llm_backend_state(status) -> str:
+    if status.ollama_binary_path and status.ollama_reachable and status.model_available:
+        return "Ollama configured"
+    return "No LLM configured"
 
 
 @app.command()
@@ -451,12 +461,16 @@ def setup(
     status = inspect_setup(paths, check_only=check)
 
     if check:
+        core_ready = _core_setup_ready(status)
+        llm_state = _llm_backend_state(status)
         lines = [
             f"Workspace: {paths.workspace_root}",
             f"Data dir: {paths.data_dir}",
             f"DB path: {paths.db_path}",
             f"Config path: {paths.config_path}",
             f"Problem bank: {paths.problems_dir}",
+            "",
+            f"Core features: {'ready' if core_ready else 'not ready'}",
             f"Data dir exists: {'yes' if status.data_dir_exists else 'no'}",
             f"Database ready: {'yes' if status.db_ready else 'no'}",
             *([f"Database detail: {status.db_error}"] if status.db_error else []),
@@ -465,7 +479,9 @@ def setup(
                 if status.indexing_error is None
                 else f"Problem bank readable: no ({status.indexing_error})"
             ),
-            f"Configured backend: {status.configured_backend}",
+            "",
+            f"LLM features: {llm_state}",
+            f"Configured backend preference: {status.configured_backend}",
             f"Configured model: {status.configured_model}",
             f"Resolved model: {status.resolved_model}",
             f"Detected RAM: {status.ram_gb:.1f} GB",
@@ -477,9 +493,11 @@ def setup(
                 else "Installed Ollama models: none detected"
             ),
             *(["Ollama detail: " + status.ollama_detail] if status.ollama_detail else []),
-            "If Ollama is missing, run: `brew install ollama`",
-            "If the Ollama daemon is down, run: `ollama serve`",
-            f"If the recommended model is missing, run: `ollama pull {status.resolved_model}`",
+            "",
+            "Core lcgrade solving works without any LLM backend.",
+            "Enable local AI features:",
+            *[f"  {command}" for command in local_llm_enablement_commands()],
+            f"  `ollama pull {status.resolved_model}`",
             "Next product commands:",
             "  `python3 -m lcgrade.cli setup`",
             "  `python3 -m lcgrade.cli start two-sum`",
@@ -490,21 +508,39 @@ def setup(
         return
 
     if status.ollama_binary_path is None:
+        if not _core_setup_ready(status):
+            console.print(
+                Panel.fit(
+                    "\n".join(
+                        [
+                            "Core setup is incomplete.",
+                            *(["Database detail: " + status.db_error] if status.db_error else []),
+                            *(["Indexing detail: " + status.indexing_error] if status.indexing_error else []),
+                            "Fix the core setup issues first, then re-run `python3 -m lcgrade.cli setup`.",
+                        ]
+                    ),
+                    title="lcgrade setup",
+                )
+            )
+            raise typer.Exit(code=1)
         console.print(
             Panel.fit(
                 "\n".join(
                     [
-                        "Ollama is not installed.",
-                        "Run these commands, then re-run setup:",
-                        "`brew install ollama`",
-                        "`ollama serve`",
-                        "`python3 -m lcgrade.cli setup`",
+                        "Core lcgrade is ready.",
+                        "LLM features are unavailable until a local backend is configured.",
+                        "You can already use the offline workflow:",
+                        "`python3 -m lcgrade.cli start two-sum`",
+                        "`python3 -m lcgrade.cli solve`",
+                        "",
+                        "Enable local AI features later with:",
+                        *local_llm_enablement_commands(),
                     ]
                 ),
                 title="lcgrade setup",
             )
         )
-        raise typer.Exit(code=1)
+        return
 
     if not status.ollama_reachable:
         logger.warning("Ollama unreachable during setup", extra={"detail": status.ollama_detail})
@@ -634,6 +670,8 @@ def setup(
         f"DB path: {paths.db_path}",
         f"Config path: {paths.config_path}",
         f"Problem bank: {paths.problems_dir}",
+        f"Core features: {'ready' if _core_setup_ready(final_status) else 'not ready'}",
+        f"LLM features: {_llm_backend_state(final_status)}",
         f"Database ready: {'yes' if final_status.db_ready else 'no'}",
         f"Problem bank indexable: yes ({final_status.indexed_count} problem(s))",
         f"Configured backend: {config.backend}",
@@ -650,6 +688,7 @@ def setup(
         "1. lcgrade start two-sum",
         "2. edit the starter file",
         "3. lcgrade solve",
+        "AI review, hints, and generated tests are optional local enhancements.",
         "v0 uses repo-local problems/ and .lcgrade/ paths.",
     ]
     console.print(Panel.fit("\n".join(lines), title="lcgrade setup"))

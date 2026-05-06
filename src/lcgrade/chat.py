@@ -5,7 +5,7 @@ import sqlite3
 from typing import Sequence
 
 from .db import fetch_recent_chat_messages, get_active_slug, insert_chat_message
-from .llm import LLMBackend
+from .llm import LLMBackend, local_llm_required_message
 from .logging_utils import get_logger
 from .problems import ProblemDocument, load_problem_by_slug
 from .reviews import fetch_latest_attempt, problem_review_status
@@ -140,12 +140,12 @@ def run_chat_turn(
             slug=slug,
             response_text=None,
             session_id=session_id,
-            skipped_reason="LLM backend unavailable.",
+            skipped_reason=local_llm_required_message(),
         )
 
     try:
         if not llm.available():
-            reason = llm.unavailable_reason() or "LLM backend unavailable."
+            reason = local_llm_required_message(llm.unavailable_reason())
             logger.warning("Chat skipped for %s: %s", slug, reason)
             return ChatTurnResult(
                 slug=slug,
@@ -159,7 +159,7 @@ def run_chat_turn(
             slug=slug,
             response_text=None,
             session_id=session_id,
-            skipped_reason=f"LLM backend unavailable: {exc}",
+            skipped_reason=local_llm_required_message(f"LLM backend unavailable: {exc}"),
         )
 
     status = problem_review_status(conn, slug)

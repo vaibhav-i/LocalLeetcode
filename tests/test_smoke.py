@@ -52,6 +52,7 @@ def test_solve_smoke() -> None:
     assert "LLM tests: 0/0" in result.stdout
     assert "Bundled tests: 2/2" in result.stdout
     assert "Status: pass" in result.stdout
+    assert "Local AI-generated tests were skipped." in result.stdout
     assert "Using bundled tests only." in result.stdout
     assert "Active problem cleared after successful solve." in result.stdout
     assert "lcgrade review two-sum" in result.stdout
@@ -100,7 +101,7 @@ def test_review_accepts_explicit_mlx_backend() -> None:
 
     assert solve_result.exit_code == 0
     assert review_result.exit_code == 0
-    assert "LLM backend unavailable." in review_result.stdout
+    assert "This feature needs a local LLM backend." in review_result.stdout
 
 
 def test_solve_reports_missing_expected_function(tmp_path: Path) -> None:

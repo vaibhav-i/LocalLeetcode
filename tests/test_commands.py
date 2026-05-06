@@ -84,10 +84,12 @@ def test_setup_reports_paths_and_unavailable_backend(
     assert result.exit_code == 0
     assert str(isolated_app_paths.workspace_root) in result.stdout
     assert ".lcgrade/lcgrade.db" in result.stdout
+    assert "Core features: not ready" in result.stdout
     assert "Problem bank readable: yes" in result.stdout
     assert "Resolved model: qwen2.5-coder:7b" in result.stdout
     assert "Ollama reachable: yes" in result.stdout
     assert "Installed Ollama models: none detected" in result.stdout
+    assert "LLM features: No LLM configured" in result.stdout
     assert "ollama pull qwen2.5-coder:7b" in result.stdout
     assert "repo-local problems/" in result.stdout
 
@@ -107,11 +109,11 @@ def test_setup_reports_missing_ollama_binary(
 
     result = runner.invoke(app, ["setup"])
 
-    assert result.exit_code == 1
-    assert "Ollama is not installed." in result.stdout
+    assert result.exit_code == 0
+    assert "Core lcgrade is ready." in result.stdout
+    assert "LLM features are unavailable until a local backend is configured." in result.stdout
     assert "brew install ollama" in result.stdout
-    assert "ollama serve" in result.stdout
-    assert "python3 -m lcgrade.cli setup" in result.stdout
+    assert "python3 -m lcgrade.cli solve" in result.stdout
 
 
 def test_setup_reports_ollama_serve_guidance(
@@ -247,6 +249,7 @@ def test_setup_check_prints_remediation_commands(
     assert "brew install ollama" in result.stdout
     assert "ollama serve" in result.stdout
     assert "ollama pull qwen2.5-coder:7b" in result.stdout
+    assert "Core lcgrade solving works without any LLM backend." in result.stdout
     assert "python3 -m lcgrade.cli start two-sum" in result.stdout
     assert "python3 -m lcgrade.cli solve" in result.stdout
 
@@ -620,7 +623,9 @@ def test_chat_reports_unavailable_backend(
     result = runner.invoke(app, ["chat", "Need help"])
 
     assert result.exit_code == 1
-    assert "LLM backend unavailable." in result.stdout
+    assert "This feature needs a local LLM backend." in result.stdout
+    assert "Core lcgrade solving still works without one." in result.stdout
+    assert "brew install ollama" in result.stdout
 
 
 def test_solve_uses_active_problem_and_clears_active_slug_and_chat_on_success(

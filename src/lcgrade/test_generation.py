@@ -5,7 +5,7 @@ import json
 from typing import Any, Mapping, Sequence
 
 from .execution import load_test_cases
-from .llm import LLMBackend, ModelInfo
+from .llm import LLMBackend, ModelInfo, local_llm_test_fallback_message
 from .logging_utils import get_logger
 from .problems import ProblemDocument
 from .types import TestCase
@@ -124,13 +124,7 @@ def load_bundled_test_cases(problem: ProblemDocument) -> tuple[TestCase, ...]:
 
 
 def _fallback_warning(reason: str | None) -> str:
-    cleaned_reason = (reason or "").strip()
-    if not cleaned_reason:
-        return "LLM backend unavailable. Using bundled tests only."
-    cleaned_reason = cleaned_reason.rstrip(".")
-    if cleaned_reason.lower().endswith("using bundled tests only"):
-        return f"{cleaned_reason}."
-    return f"{cleaned_reason}. Using bundled tests only."
+    return local_llm_test_fallback_message(reason)
 
 
 def build_test_generation_prompt(

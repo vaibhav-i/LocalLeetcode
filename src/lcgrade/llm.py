@@ -19,6 +19,39 @@ from .logging_utils import get_logger
 
 logger = get_logger("lcgrade.llm")
 
+
+def local_llm_enablement_commands() -> tuple[str, ...]:
+    return (
+        "`brew install ollama`",
+        "`ollama serve`",
+        "`python3 -m lcgrade.cli setup`",
+    )
+
+
+def local_llm_required_message(reason: str | None = None) -> str:
+    lines = [
+        "This feature needs a local LLM backend.",
+        "Core lcgrade solving still works without one.",
+        "To enable local AI features today, run:",
+        *local_llm_enablement_commands(),
+    ]
+    cleaned_reason = (reason or "").strip()
+    if cleaned_reason:
+        lines.append(f"Detail: {cleaned_reason}")
+    return "\n".join(lines)
+
+
+def local_llm_test_fallback_message(reason: str | None = None) -> str:
+    cleaned_reason = (reason or "").strip()
+    lines = [
+        "Local AI-generated tests were skipped.",
+        "Using bundled tests only.",
+        "Run `python3 -m lcgrade.cli setup` to enable local AI features.",
+    ]
+    if cleaned_reason:
+        lines.insert(1, f"Detail: {cleaned_reason.rstrip('.')}.")
+    return " ".join(lines)
+
 @dataclass(slots=True, frozen=True)
 class LLMResponse:
     """A single model response with lightweight usage metadata."""
