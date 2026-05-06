@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import json
+import random
 import sqlite3
 from typing import Any, Iterable, Mapping
 
@@ -559,3 +560,293 @@ def fetch_recent_chat_messages(
         (slug, session_id, limit),
     ).fetchall()
     return [dict(row) for row in reversed(rows)]
+
+
+def _decode_json_list(value: Any) -> list[Any]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        if isinstance(decoded, list):
+            return decoded
+        return [decoded]
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return []
+
+
+def _record_get(record: Mapping[str, Any] | sqlite3.Row, key: str, default: Any = None) -> Any:
+    try:
+        return record[key]
+    except (KeyError, IndexError, TypeError):
+        return default
+
+
+def _problem_tags(record: Mapping[str, Any]) -> tuple[str, ...]:
+    tags: list[str] = []
+    for tag in _decode_json_list(_record_get(record, "tags", "[]")):
+        normalized = str(tag).strip().lower()
+        if normalized:
+            tags.append(normalized)
+    return tuple(tags)
+
+
+def _difficulty_sort_key(value: str) -> tuple[int, str]:
+    normalized = value.strip().lower()
+    order = {"easy": 0, "medium": 1, "hard": 2}
+    return (order.get(normalized, 99), normalized)
+
+
+def fetch_global_progress_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    total_problems = int(conn.execute("SELECT COUNT(*) AS count FROM problems").fetchone()["count"])
+    attempted = int(conn.execute("SELECT COUNT(DISTINCT slug) AS count FROM attempts").fetchone()["count"])
+    solved = int(
+        conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM problems
+            WHERE auto_solved = 1 OR manual_solved = 1
+            """
+        ).fetchone()["count"]
+    )
+    auto_solved = int(
+        conn.execute("SELECT COUNT(*) AS count FROM problems WHERE auto_solved = 1").fetchone()["count"]
+    )
+    manual_solved = int(
+        conn.execute("SELECT COUNT(*) AS count FROM problems WHERE manual_solved = 1").fetchone()["count"]
+    )
+    review_generated = int(
+        conn.execute("SELECT COUNT(*) AS count FROM problems WHERE review_generated = 1").fetchone()["count"]
+    )
+    review_acknowledged = int(
+        conn.execute(
+            "SELECT COUNT(*) AS count FROM problems WHERE review_acknowledged = 1"
+        ).fetchone()["count"]
+    )
+    followup_completed = int(
+        conn.execute(
+            "SELECT COUNT(*) AS count FROM problems WHERE followup_completed = 1"
+        ).fetchone()["count"]
+    )
+    return {
+        "total_problems": total_problems,
+        "attempted": attempted,
+        "solved": solved,
+        "auto_solved": auto_solved,
+        "manual_solved": manual_solved,
+        "review_generated": review_generated,
+        "review_acknowledged": review_acknowledged,
+        "followup_completed": followup_completed,
+    }
+
+
+def fetch_progress_counts_by_difficulty(conn: sqlite3.Connection) -> list[dict[str, int | str]]:
+    rows = conn.execute(
+        """
+        SELECT
+            difficulty,
+            COUNT(*) AS total,
+            SUM(CASE WHEN EXISTS (SELECT 1 FROM attempts WHERE attempts.slug = problems.slug) THEN 1 ELSE 0 END) AS attempted,
+            SUM(CASE WHEN auto_solved = 1 OR manual_solved = 1 THEN 1 ELSE 0 END) AS solved,
+            SUM(CASE WHEN review_generated = 1 THEN 1 ELSE 0 END) AS review_generated,
+            SUM(CASE WHEN review_acknowledged = 1 THEN 1 ELSE 0 END) AS review_acknowledged,
+            SUM(CASE WHEN followup_completed = 1 THEN 1 ELSE 0 END) AS followup_completed
+        FROM problems
+        GROUP BY difficulty
+        ORDER BY
+            CASE lower(difficulty)
+                WHEN 'easy' THEN 0
+                WHEN 'medium' THEN 1
+                WHEN 'hard' THEN 2
+                ELSE 99
+            END,
+            lower(difficulty)
+        """
+    ).fetchall()
+    return [
+        {
+            "difficulty": str(row["difficulty"]),
+            "total": int(row["total"] or 0),
+            "attempted": int(row["attempted"] or 0),
+            "solved": int(row["solved"] or 0),
+            "review_generated": int(row["review_generated"] or 0),
+            "review_acknowledged": int(row["review_acknowledged"] or 0),
+            "followup_completed": int(row["followup_completed"] or 0),
+        }
+        for row in rows
+    ]
+
+
+def fetch_weakest_tags_by_bundled_pass_rate(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 5,
+) -> list[dict[str, int | float | str]]:
+    if limit <= 0:
+        return []
+
+    rows = conn.execute(
+        """
+        SELECT problems.tags, attempts.bundled_passed, attempts.bundled_total
+        FROM attempts
+        JOIN problems ON problems.slug = attempts.slug
+        WHERE attempts.bundled_total > 0
+        ORDER BY attempts.id ASC
+        """
+    ).fetchall()
+
+    tag_stats: dict[str, dict[str, int | float | str]] = {}
+    for row in rows:
+        passed = int(row["bundled_passed"] or 0)
+        total = int(row["bundled_total"] or 0)
+        for tag in _problem_tags(row):
+            entry = tag_stats.setdefault(
+                tag,
+                {
+                    "tag": tag,
+                    "attempts": 0,
+                    "bundled_passed": 0,
+                    "bundled_total": 0,
+                    "pass_rate": 0.0,
+                },
+            )
+            entry["attempts"] = int(entry["attempts"]) + 1
+            entry["bundled_passed"] = int(entry["bundled_passed"]) + passed
+            entry["bundled_total"] = int(entry["bundled_total"]) + total
+
+    for entry in tag_stats.values():
+        bundled_total = int(entry["bundled_total"])
+        entry["pass_rate"] = (int(entry["bundled_passed"]) / bundled_total) if bundled_total else 0.0
+
+    ordered = sorted(
+        tag_stats.values(),
+        key=lambda item: (
+            float(item["pass_rate"]),
+            -int(item["attempts"]),
+            str(item["tag"]),
+        ),
+    )
+    return ordered[:limit]
+
+
+def fetch_problem_history_view(conn: sqlite3.Connection, slug: str) -> dict[str, Any] | None:
+    problem = fetch_problem_record(conn, slug)
+    if problem is None:
+        return None
+
+    attempts = conn.execute(
+        """
+        SELECT *
+        FROM attempts
+        WHERE slug = ?
+        ORDER BY id DESC
+        """,
+        (slug,),
+    ).fetchall()
+    attempt_rows = [dict(row) for row in attempts]
+
+    milestones = {
+        "auto_solved": bool(problem.get("auto_solved", 0)),
+        "auto_solved_at": problem.get("auto_solved_at"),
+        "manual_solved": bool(problem.get("manual_solved", 0)),
+        "manual_solved_at": problem.get("manual_solved_at"),
+        "review_generated": bool(problem.get("review_generated", 0)),
+        "review_generated_at": problem.get("review_generated_at"),
+        "review_acknowledged": bool(problem.get("review_acknowledged", 0)),
+        "review_acknowledged_at": problem.get("review_acknowledged_at"),
+        "followup_completed": bool(problem.get("followup_completed", 0)),
+        "followup_completed_at": problem.get("followup_completed_at"),
+    }
+
+    if not attempt_rows:
+        return {
+            "problem": problem,
+            "milestones": milestones,
+            "attempts": [],
+        }
+
+    attempt_ids = [int(row["id"]) for row in attempt_rows]
+    placeholders = ", ".join(["?"] * len(attempt_ids))
+    review_rows = conn.execute(
+        f"""
+        SELECT *
+        FROM reviews
+        WHERE attempt_id IN ({placeholders})
+        """,
+        attempt_ids,
+    ).fetchall()
+    reviews_by_attempt_id = {int(row["attempt_id"]): dict(row) for row in review_rows}
+    review_ids = [int(row["id"]) for row in review_rows]
+    extensions_by_review_id: dict[int, list[dict[str, Any]]] = {}
+    if review_ids:
+        review_placeholders = ", ".join(["?"] * len(review_ids))
+        extension_rows = conn.execute(
+            f"""
+            SELECT *
+            FROM extension_results
+            WHERE review_id IN ({review_placeholders})
+            ORDER BY id ASC
+            """,
+            review_ids,
+        ).fetchall()
+        for row in extension_rows:
+            extensions_by_review_id.setdefault(int(row["review_id"]), []).append(dict(row))
+
+    history_items: list[dict[str, Any]] = []
+    for index, attempt in enumerate(attempt_rows, start=1):
+        review = reviews_by_attempt_id.get(int(attempt["id"]))
+        review_id = int(review["id"]) if review is not None else None
+        history_items.append(
+            {
+                "attempt_number": index,
+                "attempt": attempt,
+                "review": review,
+                "extensions": extensions_by_review_id.get(review_id, []) if review_id is not None else [],
+            }
+        )
+
+    return {
+        "problem": problem,
+        "milestones": milestones,
+        "attempts": history_items,
+    }
+
+
+def select_random_unsolved_problem(
+    conn: sqlite3.Connection,
+    *,
+    difficulty: str | None = None,
+    tag: str | None = None,
+    rng: random.Random | None = None,
+) -> dict[str, Any] | None:
+    difficulty_filter = difficulty.strip().lower() if difficulty else None
+    tag_filter = tag.strip().lower() if tag else None
+
+    candidates: list[dict[str, Any]] = []
+    for record in list_problem_records(conn):
+        if int(record.get("auto_solved", 0) or 0) or int(record.get("manual_solved", 0) or 0):
+            continue
+        if difficulty_filter is not None and str(record.get("difficulty", "")).strip().lower() != difficulty_filter:
+            continue
+        if tag_filter is not None and tag_filter not in _problem_tags(record):
+            continue
+        candidates.append(record)
+
+    if not candidates:
+        logger.info("No unsolved problem matched difficulty=%s tag=%s", difficulty_filter, tag_filter)
+        return None
+
+    chooser = rng.choice if rng is not None else random.choice
+    selected = chooser(candidates)
+    logger.info(
+        "Selected random unsolved problem %s difficulty=%s tag=%s",
+        selected.get("slug"),
+        difficulty_filter,
+        tag_filter,
+    )
+    return selected

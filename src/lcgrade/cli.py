@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 import typer
@@ -13,9 +14,14 @@ from .db import (
     bootstrap_database,
     clear_chat_messages,
     clear_active_slug,
+    fetch_global_progress_counts,
+    fetch_problem_history_view,
+    fetch_progress_counts_by_difficulty,
+    fetch_weakest_tags_by_bundled_pass_rate,
     get_active_slug,
     prune_attempt_history,
     reset_problem_state,
+    select_random_unsolved_problem,
     set_active_slug,
 )
 from .execution import ExecutionError
@@ -96,6 +102,45 @@ def _resolve_target_slug(
         console.print(Panel.fit(require_active_message, title="lcgrade"))
         raise typer.Exit(code=1)
     return active_slug
+
+
+def _format_timestamp(value: str | None) -> str:
+    if not value:
+        return "—"
+    try:
+        return datetime.fromisoformat(value).strftime("%b %d, %I:%M%p")
+    except ValueError:
+        return value
+
+
+def _history_review_state(item: dict[str, object], milestones: dict[str, object]) -> str:
+    review = item.get("review")
+    if review is None:
+        return "·"
+    if milestones.get("review_acknowledged"):
+        return "✓ ack"
+    return "✓ gen"
+
+
+def _history_followup_state(item: dict[str, object], milestones: dict[str, object]) -> str:
+    if milestones.get("followup_completed"):
+        return "✓"
+    extensions = item.get("extensions") or []
+    return "✓ gen" if extensions else "·"
+
+
+def _milestone_lines(milestones: dict[str, object]) -> list[str]:
+    solved_at = milestones.get("auto_solved_at") or milestones.get("manual_solved_at")
+    lines: list[str] = []
+    if solved_at:
+        lines.append(f"Solved on {_format_timestamp(str(solved_at))}")
+    if milestones.get("review_generated_at"):
+        lines.append(f"Review generated on {_format_timestamp(str(milestones['review_generated_at']))}")
+    if milestones.get("review_acknowledged_at"):
+        lines.append(f"Review acknowledged on {_format_timestamp(str(milestones['review_acknowledged_at']))}")
+    if milestones.get("followup_completed_at"):
+        lines.append(f"Follow-up completed on {_format_timestamp(str(milestones['followup_completed_at']))}")
+    return lines
 
 
 def _setup_model_choices(status) -> list[dict[str, str]]:
@@ -244,6 +289,157 @@ def describe(slug: str | None = typer.Argument(None, help="Problem slug to descr
         problem.body.strip(),
     ]
     console.print(Panel.fit("\n".join(lines), title="lcgrade describe"))
+
+
+@app.command()
+def history(slug: str | None = typer.Argument(None, help="Problem slug whose attempt history should be shown.")) -> None:
+    paths = discover_paths()
+    index_problem_bank, _ = _lazy_imports()
+    logger.info("Showing history", extra={"slug": slug})
+
+    paths.data_dir.mkdir(parents=True, exist_ok=True)
+    connection = bootstrap_database(paths.db_path)
+    try:
+        index_problem_bank(connection, paths.problems_dir)
+        slug = _resolve_target_slug(connection, slug)
+        history_view = fetch_problem_history_view(connection, slug)
+    finally:
+        connection.close()
+
+    if history_view is None:
+        raise typer.BadParameter(f"Unknown problem slug: {slug}")
+
+    problem = history_view["problem"]
+    milestones = history_view["milestones"]
+    attempts = history_view["attempts"]
+
+    if not attempts:
+        lines = [
+            f"History: {problem['title']} ({problem['slug']})",
+            "No saved attempts yet.",
+            *([f"Milestones: {line}" for line in _milestone_lines(milestones)] or ["Milestones: none yet."]),
+        ]
+        console.print(Panel.fit("\n".join(lines), title="lcgrade history"))
+        return
+
+    table = Table(title=f"History · {problem['title']}")
+    table.add_column("#")
+    table.add_column("Date")
+    table.add_column("Bundled")
+    table.add_column("LLM")
+    table.add_column("Review")
+    table.add_column("Follow-up")
+    table.add_column("Complexity")
+    table.add_column("Status")
+    for item in attempts:
+        attempt = item["attempt"]
+        review = item["review"]
+        complexity = review["complexity_time"] if review and review.get("complexity_time") else "—"
+        table.add_row(
+            str(item["attempt_number"]),
+            _format_timestamp(str(attempt.get("timestamp"))),
+            f"{attempt.get('bundled_passed', 0)}/{attempt.get('bundled_total', 0)}",
+            f"{attempt.get('llm_passed', 0)}/{attempt.get('llm_total', 0)}",
+            _history_review_state(item, milestones),
+            _history_followup_state(item, milestones),
+            str(complexity),
+            str(attempt.get("status", "unknown")),
+        )
+
+    milestone_lines = _milestone_lines(milestones)
+    console.print(table)
+    console.print(
+        Panel.fit(
+            "\n".join(milestone_lines or ["No milestones completed yet."]),
+            title="Milestones",
+        )
+    )
+
+
+@app.command()
+def stats() -> None:
+    paths = discover_paths()
+    index_problem_bank, _ = _lazy_imports()
+    logger.info("Showing global stats")
+
+    paths.data_dir.mkdir(parents=True, exist_ok=True)
+    connection = bootstrap_database(paths.db_path)
+    try:
+        index_problem_bank(connection, paths.problems_dir)
+        counts = fetch_global_progress_counts(connection)
+        by_difficulty = fetch_progress_counts_by_difficulty(connection)
+        weakest_tags = fetch_weakest_tags_by_bundled_pass_rate(connection, limit=5)
+    finally:
+        connection.close()
+
+    lines = [
+        f"Solved: {counts['solved']}/{counts['total_problems']}",
+        f"Attempted: {counts['attempted']}/{counts['total_problems']}",
+        f"Review Generated: {counts['review_generated']}",
+        f"Review Acknowledged: {counts['review_acknowledged']}",
+        f"Follow-up Completed: {counts['followup_completed']}",
+        "",
+        "By Difficulty:",
+    ]
+    for row in by_difficulty:
+        lines.append(f"  {row['difficulty']}: {row['solved']}/{row['total']} solved · {row['attempted']} attempted")
+    if weakest_tags:
+        lines.extend(
+            [
+                "",
+                "Weakest Tags:",
+                *[
+                    f"  {row['tag']}: {int(round(float(row['pass_rate']) * 100))}% bundled pass rate across {row['attempts']} attempt(s)"
+                    for row in weakest_tags
+                ],
+            ]
+        )
+    console.print(Panel.fit("\n".join(lines), title="lcgrade stats"))
+
+
+@app.command("random")
+def random_problem(
+    difficulty: str | None = typer.Option(None, "--difficulty", help="Filter by difficulty."),
+    tag: str | None = typer.Option(None, "--tag", help="Filter by tag."),
+) -> None:
+    paths = discover_paths()
+    index_problem_bank, load_problem = _lazy_imports()
+    logger.info("Selecting random problem", extra={"difficulty": difficulty, "tag": tag})
+
+    paths.data_dir.mkdir(parents=True, exist_ok=True)
+    connection = bootstrap_database(paths.db_path)
+    try:
+        index_problem_bank(connection, paths.problems_dir)
+        selected = select_random_unsolved_problem(connection, difficulty=difficulty, tag=tag)
+        if selected is None:
+            lines = [
+                "No unsolved problem matched the current filters.",
+                *(["Difficulty filter: " + difficulty] if difficulty else []),
+                *(["Tag filter: " + tag] if tag else []),
+            ]
+            console.print(Panel.fit("\n".join(lines), title="lcgrade random"))
+            raise typer.Exit(code=1)
+        problem = load_problem(connection, str(selected["slug"]))
+        if problem is None:
+            raise typer.BadParameter(f"Unknown problem slug: {selected['slug']}")
+        set_active_slug(connection, problem.slug)
+    finally:
+        connection.close()
+
+    starter_path = problem.starter_path if problem.starter_path is not None else "No starter.py found."
+    console.print(
+        Panel.fit(
+            "\n".join(
+                [
+                    f"Active problem: {problem.metadata.title} ({problem.slug})",
+                    f"Difficulty: {problem.metadata.difficulty}",
+                    f"Function: {problem.metadata.function_name}",
+                    f"Starter: {starter_path}",
+                ]
+            ),
+            title="lcgrade random",
+        )
+    )
 
 
 @app.command()

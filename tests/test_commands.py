@@ -325,6 +325,140 @@ def test_describe_uses_active_problem_when_slug_is_omitted(isolated_app_paths: A
     assert "Slug: contains-duplicate" in result.stdout
 
 
+def test_history_renders_empty_state_for_problem_without_attempts(
+    isolated_app_paths: AppPaths,
+) -> None:
+    conn = bootstrap_database(isolated_app_paths.db_path)
+    index_problem_bank(conn, isolated_app_paths.problems_dir)
+    cli_module.set_active_slug(conn, "two-sum")
+    conn.close()
+
+    result = runner.invoke(app, ["history"])
+
+    assert result.exit_code == 0
+    assert "No saved attempts yet." in result.stdout
+    assert "Milestones: none yet." in result.stdout
+
+
+def test_history_renders_attempts_and_milestones(
+    isolated_app_paths: AppPaths,
+) -> None:
+    conn = bootstrap_database(isolated_app_paths.db_path)
+    index_problem_bank(conn, isolated_app_paths.problems_dir)
+    cli_module.set_active_slug(conn, "two-sum")
+    _seed_attempt(conn, slug="two-sum", code_snapshot="def two_sum(nums, target):\n    return [0, 1]\n", status="fail")
+    second_attempt = _seed_attempt(conn, slug="two-sum", code_snapshot="def two_sum(nums, target):\n    return [1, 2]\n", status="pass")
+    review_id = persist_review(conn, attempt_id=second_attempt, review_text="Solid review.", complexity_time="O(n)")
+    persist_extension_result(conn, review_id=review_id, extension_name="interview", output_text="Follow-up")
+    conn.execute(
+        """
+        UPDATE problems
+        SET
+            auto_solved = 1,
+            auto_solved_at = '2026-01-01T12:00:00+00:00',
+            review_generated = 1,
+            review_generated_at = '2026-01-01T12:05:00+00:00',
+            review_acknowledged = 1,
+            review_acknowledged_at = '2026-01-01T12:10:00+00:00',
+            followup_completed = 1,
+            followup_completed_at = '2026-01-01T12:15:00+00:00'
+        WHERE slug = 'two-sum'
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    result = runner.invoke(app, ["history"])
+
+    assert result.exit_code == 0
+    assert "History · Two Sum" in result.stdout
+    assert "O(n)" in result.stdout
+    assert "✓ ack" in result.stdout
+    assert "✓" in result.stdout
+    assert "Solved on" in result.stdout
+    assert "Review acknowledged on" in result.stdout
+    assert "Follow-up completed on" in result.stdout
+
+
+def test_stats_renders_global_progress_and_weakest_tags(
+    isolated_app_paths: AppPaths,
+) -> None:
+    conn = bootstrap_database(isolated_app_paths.db_path)
+    index_problem_bank(conn, isolated_app_paths.problems_dir)
+    conn.execute(
+        """
+        UPDATE problems
+        SET
+            auto_solved = CASE slug WHEN 'two-sum' THEN 1 ELSE 0 END,
+            review_generated = CASE slug WHEN 'two-sum' THEN 1 ELSE 0 END,
+            review_acknowledged = CASE slug WHEN 'two-sum' THEN 1 ELSE 0 END,
+            followup_completed = CASE slug WHEN 'two-sum' THEN 1 ELSE 0 END
+        """
+    )
+    _seed_attempt(conn, slug="two-sum", code_snapshot="def two_sum(nums, target):\n    return [0, 1]\n", status="pass")
+    _seed_attempt(conn, slug="contains-duplicate", code_snapshot="def contains_duplicate(nums):\n    return False\n", status="fail")
+    conn.execute(
+        """
+        UPDATE attempts
+        SET bundled_passed = CASE slug WHEN 'two-sum' THEN 2 ELSE 0 END,
+            bundled_total = 2
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    result = runner.invoke(app, ["stats"])
+
+    assert result.exit_code == 0
+    assert "Solved: 1/3" in result.stdout
+    assert "Attempted: 2/3" in result.stdout
+    assert "Review Generated: 1" in result.stdout
+    assert "By Difficulty:" in result.stdout
+    assert "easy: 1/3 solved" in result.stdout
+    assert "Weakest Tags:" in result.stdout
+    assert "hash-table" in result.stdout or "two-pointers" in result.stdout or "array" in result.stdout
+
+
+def test_random_sets_active_problem(
+    isolated_app_paths: AppPaths,
+) -> None:
+    conn = bootstrap_database(isolated_app_paths.db_path)
+    index_problem_bank(conn, isolated_app_paths.problems_dir)
+    conn.execute("UPDATE problems SET auto_solved = 1 WHERE slug IN ('contains-duplicate', 'two-sum-sorted')")
+    conn.commit()
+    conn.close()
+
+    result = runner.invoke(app, ["random"])
+
+    assert result.exit_code == 0
+    assert "Active problem:" in result.stdout
+
+    conn = open_database(isolated_app_paths.db_path)
+    try:
+        assert get_active_slug(conn) is not None
+    finally:
+        conn.close()
+
+
+def test_random_respects_filters_and_reports_empty_state(
+    isolated_app_paths: AppPaths,
+) -> None:
+    conn = bootstrap_database(isolated_app_paths.db_path)
+    index_problem_bank(conn, isolated_app_paths.problems_dir)
+    conn.execute("UPDATE problems SET auto_solved = 1 WHERE slug = 'two-sum'")
+    conn.execute("UPDATE problems SET auto_solved = 1 WHERE slug = 'two-sum-sorted'")
+    conn.commit()
+    conn.close()
+
+    filtered = runner.invoke(app, ["random", "--tag", "hash-table"])
+    empty = runner.invoke(app, ["random", "--difficulty", "hard"])
+
+    assert filtered.exit_code == 0
+    assert "contains-duplicate" in filtered.stdout or "two-sum" in filtered.stdout
+    assert empty.exit_code == 1
+    assert "No unsolved problem matched the current filters." in empty.stdout
+
+
 def test_reset_clears_problem_state_and_active_slug(isolated_app_paths: AppPaths) -> None:
     conn = bootstrap_database(isolated_app_paths.db_path)
     index_problem_bank(conn, isolated_app_paths.problems_dir)
