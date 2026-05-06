@@ -79,29 +79,31 @@ def build_stage2_prompt(problem: ProblemDocument, attempt: Mapping[str, Any]) ->
     code_snapshot = str(_attempt_value(attempt, "code_snapshot", ""))
     prompt_lines = [
         "You are lcgrade's Stage 2 reviewer for interview preparation.",
-        "Write a concise Markdown review with these sections:",
+        "Write a concise Markdown review with exactly these sections:",
         "## Complexity",
         "## Correctness",
         "## Code Quality",
         "## Edge Cases",
         "## Verdict",
+        "Keep each section short, specific, and non-repetitive.",
+        "Prefer concrete findings and fixes over praise.",
         "",
+        "Use the saved attempt facts below. Do not restate the entire problem unless it matters for the verdict.",
         f"Problem: {problem.metadata.title} ({problem.slug})",
         f"Difficulty: {problem.metadata.difficulty}",
         f"Function: {problem.metadata.function_name}",
         f"Attempt status: {_attempt_value(attempt, 'status', 'unknown')}",
         f"Test mode: {_attempt_value(attempt, 'test_mode', 'unknown')}",
+        "Facts:",
         (
-            "Bundled tests: "
-            f"{int(_attempt_value(attempt, 'bundled_passed', 0))}/"
+            f"- Bundled tests: {int(_attempt_value(attempt, 'bundled_passed', 0))}/"
             f"{int(_attempt_value(attempt, 'bundled_total', 0))}"
         ),
         (
-            "LLM tests: "
-            f"{int(_attempt_value(attempt, 'llm_passed', 0))}/"
+            f"- LLM tests: {int(_attempt_value(attempt, 'llm_passed', 0))}/"
             f"{int(_attempt_value(attempt, 'llm_total', 0))}"
         ),
-        f"Runtime ms: {float(_attempt_value(attempt, 'runtime_ms', 0.0)):.3f}",
+        f"- Runtime ms: {float(_attempt_value(attempt, 'runtime_ms', 0.0)):.3f}",
         "",
         "Problem statement:",
         problem.body.strip(),
@@ -113,7 +115,10 @@ def build_stage2_prompt(problem: ProblemDocument, attempt: Mapping[str, Any]) ->
 
 
 def _default_stage2_system_prompt() -> str:
-    return "You are a strict but supportive coding interview reviewer."
+    return (
+        "You are a strict but supportive coding interview reviewer. "
+        "Stay concise, avoid repetition, and focus on concrete feedback."
+    )
 
 
 def generate_beta_stage2_review(

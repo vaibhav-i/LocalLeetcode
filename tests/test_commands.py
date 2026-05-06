@@ -302,6 +302,29 @@ def test_start_rejects_unknown_slug() -> None:
     assert "Unknown problem slug" in (result.stdout + result.stderr)
 
 
+def test_describe_explicit_slug_renders_problem_statement() -> None:
+    result = runner.invoke(app, ["describe", "two-sum"])
+
+    assert result.exit_code == 0
+    assert "Title: Two Sum" in result.stdout
+    assert "Slug: two-sum" in result.stdout
+    assert "Function: two_sum" in result.stdout
+    assert "Given an array of integers" in result.stdout
+
+
+def test_describe_uses_active_problem_when_slug_is_omitted(isolated_app_paths: AppPaths) -> None:
+    conn = bootstrap_database(isolated_app_paths.db_path)
+    index_problem_bank(conn, isolated_app_paths.problems_dir)
+    cli_module.set_active_slug(conn, "contains-duplicate")
+    conn.close()
+
+    result = runner.invoke(app, ["describe"])
+
+    assert result.exit_code == 0
+    assert "Title: Contains Duplicate" in result.stdout
+    assert "Slug: contains-duplicate" in result.stdout
+
+
 def test_reset_clears_problem_state_and_active_slug(isolated_app_paths: AppPaths) -> None:
     conn = bootstrap_database(isolated_app_paths.db_path)
     index_problem_bank(conn, isolated_app_paths.problems_dir)

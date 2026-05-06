@@ -216,6 +216,37 @@ def list_problems() -> None:
 
 
 @app.command()
+def describe(slug: str | None = typer.Argument(None, help="Problem slug to describe.")) -> None:
+    paths = discover_paths()
+    index_problem_bank, load_problem = _lazy_imports()
+    logger.info("Describing problem", extra={"slug": slug})
+
+    paths.data_dir.mkdir(parents=True, exist_ok=True)
+    connection = bootstrap_database(paths.db_path)
+    try:
+        index_problem_bank(connection, paths.problems_dir)
+        slug = _resolve_target_slug(connection, slug)
+        problem = load_problem(connection, slug)
+        if problem is None:
+            raise typer.BadParameter(f"Unknown problem slug: {slug}")
+    finally:
+        connection.close()
+
+    tags_text = ", ".join(problem.metadata.tags) if problem.metadata.tags else "none"
+    lines = [
+        f"Title: {problem.metadata.title}",
+        f"Slug: {problem.slug}",
+        f"Difficulty: {problem.metadata.difficulty}",
+        f"Category: {problem.metadata.category or 'uncategorized'}",
+        f"Tags: {tags_text}",
+        f"Function: {problem.metadata.function_name}",
+        "",
+        problem.body.strip(),
+    ]
+    console.print(Panel.fit("\n".join(lines), title="lcgrade describe"))
+
+
+@app.command()
 def setup(
     check: bool = typer.Option(False, "--check", help="Report current environment without mutating setup state."),
 ) -> None:

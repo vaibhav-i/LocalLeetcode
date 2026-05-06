@@ -59,6 +59,11 @@ def build_chat_prompt(
     history = _history_lines(recent_messages)
     review_text = latest_review_text.strip() if latest_review_text else "No review generated yet."
     prompt_lines = [
+        "You are lcgrade's interview coach.",
+        "Keep the reply problem-scoped, concise, and action-oriented.",
+        "Prefer hints, invariants, and next steps over full solutions.",
+        "If the user asks for the answer directly, still explain at a high level and stop short of full code.",
+        "",
         f"Problem: {problem.metadata.title} ({problem.slug})",
         f"Difficulty: {problem.metadata.difficulty}",
         f"Function: {problem.metadata.function_name}",
@@ -83,22 +88,22 @@ def build_chat_prompt(
 
 def default_chat_system_prompt() -> str:
     return (
-        "You are lcgrade's problem-scoped coding coach. "
-        "Be concise, actionable, and avoid giving away a full solution unless directly asked."
+        "You are lcgrade's problem-scoped interview coach. "
+        "Be concise, actionable, and avoid giving away a full solution unless explicitly requested."
     )
 
 
 def hint_system_prompt(tier: int) -> str:
     if tier == 1:
-        style = "Give only a light nudge. Focus on framing, not steps."
+        style = "Give only a light nudge. Focus on the next insight, invariant, or decision point."
     elif tier == 2:
         style = "Give a medium-strength hint with directional guidance, but not a full algorithm."
     else:
         style = "Give a strong hint that outlines the key approach, but do not write the final code."
     return (
-        "You are lcgrade's hint assistant. "
+        "You are lcgrade's interview coach for hints. "
         f"{style} "
-        "Keep the tone supportive and concise."
+        "Keep the tone supportive, specific, and concise."
     )
 
 
