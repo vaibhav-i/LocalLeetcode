@@ -24,7 +24,7 @@ def local_llm_enablement_commands() -> tuple[str, ...]:
     return (
         "`brew install ollama`",
         "`ollama serve`",
-        "`python3 -m lcgrade.cli setup`",
+        "`lcgrade setup`",
     )
 
 
@@ -359,7 +359,7 @@ class OllamaBackend(LLMBackend):
             with request.urlopen(req, timeout=self.timeout) as response:
                 raw = response.read().decode("utf-8")
         except error.URLError as exc:
-            logger.error("Ollama request failed method=%s url=%s error=%s", method, url, exc)
+            logger.debug("Ollama request failed method=%s url=%s error=%s", method, url, exc)
             raise ConnectionError(f"Could not reach Ollama at {self.base_url}: {exc}") from exc
 
         if not raw.strip():

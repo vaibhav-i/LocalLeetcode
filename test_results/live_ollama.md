@@ -1,12 +1,13 @@
 # lcgrade Live Ollama Integration
 
-- Date: 2026-04-15
+- Date: 2026-05-06
 - Scope: optional integration track, not a `v0` signoff blocker
 
 ## Environment Status
 
-- `lcgrade setup` reported `Ollama reachable: no`
-- Because the backend was unavailable, live inference scenarios were not executed in this audit pass
+- `lcgrade setup --check` reported `Ollama reachable: no`
+- Localhost access to the Ollama daemon is blocked from this Codex sandbox with `Operation not permitted`
+- Because this is environment-level access restriction, live inference scenarios still need to be run from the user's terminal
 
 ## Requested Live Scenarios
 
@@ -18,11 +19,11 @@
 
 ## Recorded Outcome
 
-- Live Ollama validation: skipped
+- Live Ollama validation: skipped from Codex sandbox
 - Graceful degradation behavior: verified
   - `solve` fell back to bundled-only mode with warning
-  - `review` reported LLM unavailable cleanly
-  - `chat` and `hint` returned clean unavailable-backend errors
+  - LLM-dependent commands report that local AI features need a local backend
+  - core offline setup and bundled solves remain usable without Ollama
 
 ## Next Live Validation Step
 

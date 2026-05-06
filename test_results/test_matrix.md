@@ -1,7 +1,7 @@
 # lcgrade Test Matrix
 
-- Date: 2026-04-15
-- Scope: deterministic `v0` signoff plus optional live Ollama check
+- Date: 2026-05-06
+- Scope: expanded problem bank, offline-first setup, installed CLI smoke, and optional live Ollama check
 
 ## Deterministic Automated Coverage
 
@@ -14,7 +14,7 @@ python3 -m pytest tests -q
 Result:
 
 - Status: pass
-- Summary: `44 passed in 2.18s`
+- Summary: `71 passed, 2 skipped in 1.64s`
 
 Subsystem coverage summary:
 
@@ -26,6 +26,8 @@ Subsystem coverage summary:
 - Command surface: pass
 - Test-generation fallback behavior: pass
 - Ollama backend configuration and model-availability checks: pass
+- Expanded bundled problem bank indexing: pass, 12 problem(s)
+- Installed `lcgrade` console command smoke: pass
 
 ## Manual CLI Coverage
 
@@ -37,8 +39,10 @@ Subsystem coverage summary:
 - `hint`: pass for graceful unavailable-backend behavior
 - `reset`: pass
 - `prune`: pass
+- `describe`, `history`, `stats`, and `random`: pass
+- New reference-solution bundled solves: pass
 
 ## Optional Live Ollama Coverage
 
-- Status: not available in this audit environment
-- Outcome: deterministic graceful-degradation behavior verified instead
+- Status: blocked in this Codex sandbox by local daemon access restrictions
+- Outcome: deterministic graceful-degradation behavior and installed CLI behavior verified instead

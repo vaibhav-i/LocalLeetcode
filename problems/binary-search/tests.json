@@ -1,0 +1,20 @@
+[
+  {
+    "input": {"nums": [-1, 0, 3, 5, 9, 12], "target": 9},
+    "expected": 4,
+    "validator": "exact_match",
+    "source": "verified"
+  },
+  {
+    "input": {"nums": [-1, 0, 3, 5, 9, 12], "target": 2},
+    "expected": -1,
+    "validator": "exact_match",
+    "source": "verified"
+  },
+  {
+    "input": {"nums": [5], "target": 5},
+    "expected": 0,
+    "validator": "exact_match",
+    "source": "verified"
+  }
+]

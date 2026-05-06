@@ -1,0 +1,20 @@
+[
+  {
+    "input": {"s": "anagram", "t": "nagaram"},
+    "expected": true,
+    "validator": "exact_match",
+    "source": "verified"
+  },
+  {
+    "input": {"s": "rat", "t": "car"},
+    "expected": false,
+    "validator": "exact_match",
+    "source": "verified"
+  },
+  {
+    "input": {"s": "aacc", "t": "ccac"},
+    "expected": false,
+    "validator": "exact_match",
+    "source": "verified"
+  }
+]

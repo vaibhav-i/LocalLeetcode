@@ -1,0 +1,26 @@
+[
+  {
+    "input": {"s": "()"},
+    "expected": true,
+    "validator": "exact_match",
+    "source": "verified"
+  },
+  {
+    "input": {"s": "()[]{}"},
+    "expected": true,
+    "validator": "exact_match",
+    "source": "verified"
+  },
+  {
+    "input": {"s": "(]"},
+    "expected": false,
+    "validator": "exact_match",
+    "source": "verified"
+  },
+  {
+    "input": {"s": "([)]"},
+    "expected": false,
+    "validator": "exact_match",
+    "source": "verified"
+  }
+]

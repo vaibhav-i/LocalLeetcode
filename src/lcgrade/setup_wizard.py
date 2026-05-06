@@ -102,10 +102,10 @@ def inspect_setup(paths: AppPaths, *, check_only: bool) -> SetupStatus:
                 logger.warning("Configured Ollama model unavailable: %s", ollama_detail)
         except Exception as exc:
             ollama_detail = str(exc)
-            logger.error("Ollama inspection failed: %s", exc)
+            logger.info("Ollama inspection failed: %s", exc)
     else:
         ollama_detail = "Ollama binary not found."
-        logger.warning("Ollama binary not found")
+        logger.info("Ollama binary not found")
 
     return SetupStatus(
         data_dir_exists=paths.data_dir.exists(),

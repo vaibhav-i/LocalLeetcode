@@ -113,7 +113,8 @@ def test_setup_reports_missing_ollama_binary(
     assert "Core lcgrade is ready." in result.stdout
     assert "LLM features are unavailable until a local backend is configured." in result.stdout
     assert "brew install ollama" in result.stdout
-    assert "python3 -m lcgrade.cli solve" in result.stdout
+    assert "lcgrade solve" in result.stdout
+    assert "ERROR" not in result.stderr
 
 
 def test_setup_reports_ollama_serve_guidance(
@@ -136,7 +137,7 @@ def test_setup_reports_ollama_serve_guidance(
 
     assert result.exit_code == 1
     assert "ollama serve" in result.stdout
-    assert "python3 -m lcgrade.cli setup" in result.stdout
+    assert "lcgrade setup" in result.stdout
 
 
 def test_setup_pulls_missing_model_and_persists_config(
@@ -250,8 +251,8 @@ def test_setup_check_prints_remediation_commands(
     assert "ollama serve" in result.stdout
     assert "ollama pull qwen2.5-coder:7b" in result.stdout
     assert "Core lcgrade solving works without any LLM backend." in result.stdout
-    assert "python3 -m lcgrade.cli start two-sum" in result.stdout
-    assert "python3 -m lcgrade.cli solve" in result.stdout
+    assert "lcgrade start two-sum" in result.stdout
+    assert "lcgrade solve" in result.stdout
 
 
 def test_setup_uses_configured_model_for_solve(
@@ -413,11 +414,11 @@ def test_stats_renders_global_progress_and_weakest_tags(
     result = runner.invoke(app, ["stats"])
 
     assert result.exit_code == 0
-    assert "Solved: 1/3" in result.stdout
-    assert "Attempted: 2/3" in result.stdout
+    assert "Solved: 1/12" in result.stdout
+    assert "Attempted: 2/12" in result.stdout
     assert "Review Generated: 1" in result.stdout
     assert "By Difficulty:" in result.stdout
-    assert "easy: 1/3 solved" in result.stdout
+    assert "easy: 1/7 solved" in result.stdout
     assert "Weakest Tags:" in result.stdout
     assert "hash-table" in result.stdout or "two-pointers" in result.stdout or "array" in result.stdout
 
@@ -457,7 +458,15 @@ def test_random_respects_filters_and_reports_empty_state(
     empty = runner.invoke(app, ["random", "--difficulty", "hard"])
 
     assert filtered.exit_code == 0
-    assert "contains-duplicate" in filtered.stdout or "two-sum" in filtered.stdout
+    conn = open_database(isolated_app_paths.db_path)
+    try:
+        assert get_active_slug(conn) in {
+            "contains-duplicate",
+            "valid-anagram",
+            "longest-substring-without-repeating-characters",
+        }
+    finally:
+        conn.close()
     assert empty.exit_code == 1
     assert "No unsolved problem matched the current filters." in empty.stdout
 

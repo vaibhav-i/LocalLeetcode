@@ -499,9 +499,9 @@ def setup(
             *[f"  {command}" for command in local_llm_enablement_commands()],
             f"  `ollama pull {status.resolved_model}`",
             "Next product commands:",
-            "  `python3 -m lcgrade.cli setup`",
-            "  `python3 -m lcgrade.cli start two-sum`",
-            "  `python3 -m lcgrade.cli solve`",
+            "  `lcgrade setup`",
+            "  `lcgrade start two-sum`",
+            "  `lcgrade solve`",
             "v0 uses repo-local problems/ and .lcgrade/ paths.",
         ]
         console.print(Panel.fit("\n".join(lines), title="lcgrade setup --check"))
@@ -516,7 +516,7 @@ def setup(
                             "Core setup is incomplete.",
                             *(["Database detail: " + status.db_error] if status.db_error else []),
                             *(["Indexing detail: " + status.indexing_error] if status.indexing_error else []),
-                            "Fix the core setup issues first, then re-run `python3 -m lcgrade.cli setup`.",
+                            "Fix the core setup issues first, then re-run `lcgrade setup`.",
                         ]
                     ),
                     title="lcgrade setup",
@@ -530,8 +530,8 @@ def setup(
                         "Core lcgrade is ready.",
                         "LLM features are unavailable until a local backend is configured.",
                         "You can already use the offline workflow:",
-                        "`python3 -m lcgrade.cli start two-sum`",
-                        "`python3 -m lcgrade.cli solve`",
+                        "`lcgrade start two-sum`",
+                        "`lcgrade solve`",
                         "",
                         "Enable local AI features later with:",
                         *local_llm_enablement_commands(),
@@ -551,7 +551,7 @@ def setup(
                         "Ollama is installed but not reachable.",
                         "Run these commands, then re-run setup:",
                         "`ollama serve`",
-                        "`python3 -m lcgrade.cli setup`",
+                        "`lcgrade setup`",
                         *(["Detail: " + status.ollama_detail] if status.ollama_detail else []),
                     ]
                 ),
@@ -576,7 +576,7 @@ def setup(
                         "Run these commands, then re-run setup:",
                         "`ollama serve`",
                         f"`ollama pull {selected_model}`",
-                        "`python3 -m lcgrade.cli setup`",
+                        "`lcgrade setup`",
                         f"Detail: {exc}",
                     ]
                 ),
@@ -608,7 +608,7 @@ def setup(
                         [
                             "Setup incomplete. Run these commands:",
                             f"`ollama pull {selected_model}`",
-                            "`python3 -m lcgrade.cli setup`",
+                            "`lcgrade setup`",
                         ]
                     ),
                     title="lcgrade setup",
@@ -628,7 +628,7 @@ def setup(
                             f"Failed to pull {selected_model}.",
                             "Run this manually and retry setup:",
                             f"`ollama pull {selected_model}`",
-                            "`python3 -m lcgrade.cli setup`",
+                            "`lcgrade setup`",
                             *(["Error: " + pull_error] if pull_error else []),
                         ]
                     ),

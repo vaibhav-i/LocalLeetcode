@@ -1,6 +1,6 @@
 # lcgrade v0 Audit
 
-- Date: 2026-04-15
+- Date: 2026-05-06
 - Branch baseline: `hello-world`
 - Baseline commit before audit logging: `d979f7b`
 - Audit scope: `v0` only
@@ -15,14 +15,18 @@
 - Review retry path remains intact: pass
 - Chat/hint remain active-problem scoped and degrade cleanly when Ollama is unavailable: pass
 - Reset/prune lifecycle commands behave as intended for local state management: pass
+- `describe`, `history`, `stats`, and `random` are implemented: pass
+- Offline-first setup separates core readiness from optional LLM readiness: pass
+- Bundled problem bank expanded to 12 problems: pass
+- Installed `lcgrade` console command smoke passed from a clean temporary venv: pass
 
 ## Deferred By Decision, Not v0 Gaps
 
 - `MLXBackend` implementation
 - user-home install/copy flow for `~/.lcgrade/problems/`
 - generated workspace files and editor auto-open on `start`
-- larger Blind 75 problem bank expansion
-- non-core commands like `stats`, `history`, `random`, `describe`, or TUI/browser polish
+- full Blind 75-scale problem bank
+- TUI/browser polish
 
 ## Final Verdict
 
