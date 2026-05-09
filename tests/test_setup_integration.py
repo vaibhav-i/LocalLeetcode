@@ -44,7 +44,7 @@ def isolated_app_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
 @pytest.mark.skipif(not ollama_ready(), reason="Ollama with qwen2.5-coder:7b is not available")
 def test_setup_completes_with_live_ollama() -> None:
-    result = runner.invoke(app, ["setup"])
+    result = runner.invoke(app, ["setup"], input="1\n")
 
     assert result.exit_code == 0
     assert "Setup complete." in result.stdout
@@ -53,7 +53,7 @@ def test_setup_completes_with_live_ollama() -> None:
 
 @pytest.mark.skipif(not ollama_ready(), reason="Ollama with qwen2.5-coder:7b is not available")
 def test_post_setup_solve_uses_live_model() -> None:
-    setup_result = runner.invoke(app, ["setup"])
+    setup_result = runner.invoke(app, ["setup"], input="1\n")
     solve_result = runner.invoke(
         app,
         ["solve", "two-sum", "--tests", "llm", "--solution", "problems/two-sum/solutions/reference.py"],

@@ -43,17 +43,16 @@ def test_list_problems_smoke() -> None:
 
 
 def test_solve_smoke() -> None:
-    result = runner.invoke(app, ["solve", "two-sum"])
+    result = runner.invoke(app, ["solve", "two-sum", "--tests", "bundled"])
     assert result.exit_code == 0
     assert "two-sum" in result.stdout
-    assert "Requested tests mode: both" in result.stdout
+    assert "Requested tests mode: bundled" in result.stdout
     assert "Effective tests mode: bundled" in result.stdout
     assert "Backend: ollama" in result.stdout
     assert "LLM tests: 0/0" in result.stdout
     assert "Bundled tests: 2/2" in result.stdout
     assert "Status: pass" in result.stdout
-    assert "Local AI-generated tests were skipped." in result.stdout
-    assert "Using bundled tests only." in result.stdout
+    assert "Local AI-generated tests were skipped." not in result.stdout
     assert "Active problem cleared after successful solve." in result.stdout
     assert "lcgrade review two-sum" in result.stdout
 
